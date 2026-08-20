@@ -851,31 +851,39 @@ function renderChatList() {
     .join('');
 }
 
+const threadActionInflight = new Set();
+
 async function togglePinChat(id) {
-  const summary = state.chats.find((c) => c.id === id);
-  const currentlyPinned = Boolean(
-    summary?.pinned ?? (state.chat?.id === id ? state.chat.pinned : false),
-  );
-  const nextPinned = !currentlyPinned;
-  if (state.chat?.id === id) {
-    await patchChat({ pinned: nextPinned });
-    return;
+  if (threadActionInflight.has(id)) return;
+  threadActionInflight.add(id);
+  try {
+    const summary = state.chats.find((c) => c.id === id);
+    const currentlyPinned = Boolean(
+      summary?.pinned ?? (state.chat?.id === id ? state.chat.pinned : false),
+    );
+    const next = await api(`/api/chats/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ pinned: !currentlyPinned }),
+    });
+    // Pin is metadata-only — avoid patchChat's full conversation re-render
+    if (state.chat?.id === id) state.chat = next;
+    await loadChats();
+  } finally {
+    threadActionInflight.delete(id);
   }
-  await api(`/api/chats/${id}`, {
-    method: 'PATCH',
-    body: JSON.stringify({ pinned: nextPinned }),
-  });
-  await loadChats();
 }
 
 async function deleteChatFromList(id) {
-  if (!confirm('Delete this chat?')) return;
-  await api(`/api/chats/${id}`, { method: 'DELETE' });
-  if (state.chat?.id === id) {
-    state.chat = null;
-    renderConversation();
+  if (threadActionInflight.has(id)) return;
+  threadActionInflight.add(id);
+  try {
+    if (!confirm('Delete this chat?')) return;
+    await api(`/api/chats/${id}`, { method: 'DELETE' });
+    if (state.chat?.id === id) await selectChat(null);
+    await loadChats();
+  } finally {
+    threadActionInflight.delete(id);
   }
-  await loadChats();
 }
 
 function legacyModeMatch(chatMode, activeMode) {
@@ -1889,10 +1897,11 @@ async function initApp() {
   $('close-sidebar')?.addEventListener('click', closeSidebar);
   $('sidebar-scrim')?.addEventListener('click', closeSidebar);
   $('chat-list')?.addEventListener('click', (e) => {
-    const actionBtn = e.target.closest('[data-thread-action]');
-    if (actionBtn) {
+    if (e.target.closest('.thread-actions')) {
       e.preventDefault();
       e.stopPropagation();
+      const actionBtn = e.target.closest('[data-thread-action]');
+      if (!actionBtn) return;
       const item = actionBtn.closest('[data-chat-id]');
       if (!item) return;
       const id = item.dataset.chatId;

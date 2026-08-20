@@ -352,6 +352,18 @@ body[data-layout="code"] .empty-inner h1 { font-size: 1.25rem; }
   font-weight: 500;
   white-space: nowrap;
 }
+@media (pointer: coarse) {
+  .thread-actions {
+    gap: 0.15rem;
+    padding-top: 0;
+  }
+  .thread-action {
+    min-height: 2.75rem;
+    min-width: 2.75rem;
+    padding: 0 0.55rem;
+    font-size: 0.7rem;
+  }
+}
 .thread-action:hover {
   background: var(--bg-elevated);
   color: var(--text);
