@@ -39,10 +39,47 @@ const MAX_MESSAGE_CHARS = 100_000;
 fs.mkdirSync(DATA_DIR, { recursive: true });
 
 const loginAttempts = new Map();
-const activeStreams = new Map(); // chatId -> AbortController
+const activeStreams = new Map(); // `${userId}:${chatId}` -> AbortController
 
 function userDataPaths(userId) {
   return users.userDataPaths(DATA_DIR, userId);
+}
+
+function streamKey(userId, chatId) {
+  return `${userId}:${chatId}`;
+}
+
+/** null/'' → null; undefined → undefined (leave unchanged); else safeId or throw. */
+function optionalSafeId(value) {
+  if (value === undefined) return undefined;
+  if (value === null || value === '') return null;
+  return safeId(value);
+}
+
+/** Soft sanitize for stored ids — invalid/traversal → null (no throw). */
+function coerceSafeId(value) {
+  if (value == null || value === '') return null;
+  try {
+    return safeId(value);
+  } catch {
+    return null;
+  }
+}
+
+/** Load a library JSON by id; invalid/traversal ids are treated as missing (null). */
+async function loadLibraryJson(dir, id) {
+  if (id == null || id === '') return null;
+  let sid;
+  try {
+    sid = safeId(id);
+  } catch {
+    return null;
+  }
+  const file = path.join(dir, `${sid}.json`);
+  const resolved = path.resolve(file);
+  const root = path.resolve(dir);
+  if (resolved !== root && !resolved.startsWith(root + path.sep)) return null;
+  return readJsonFile(file);
 }
 
 function ensureUserData(userId) {
@@ -711,7 +748,12 @@ async function handleApi(req, res, url) {
     const password = String(body.password || '');
     if (await setupRequired()) return json(res, 400, { error: 'Setup required' });
     const user = await users.findByUsername(DATA_DIR, username);
-    if (!user || user.disabled || !users.verifyPassword(password, user.salt, user.hash)) {
+    const active = Boolean(user && !user.disabled);
+    // Always scrypt so missing/disabled usernames are not a cheap timing oracle.
+    const salt = active ? user.salt : users.DUMMY_LOGIN_SALT;
+    const hash = active ? user.hash : users.DUMMY_LOGIN_HASH;
+    const passwordOk = users.verifyPassword(password, salt, hash);
+    if (!active || !passwordOk) {
       return json(res, 401, { error: 'Invalid credentials' });
     }
     await issueSession(res, user.id);
@@ -885,9 +927,18 @@ async function handleApi(req, res, url) {
       accent,
       density,
       defaultModel: body.defaultModel !== undefined ? String(body.defaultModel).slice(0, 120) : current.defaultModel,
-      defaultPersonaId: body.defaultPersonaId !== undefined ? body.defaultPersonaId : current.defaultPersonaId,
-      defaultCharacterId: body.defaultCharacterId !== undefined ? body.defaultCharacterId : current.defaultCharacterId,
-      defaultPresetId: body.defaultPresetId !== undefined ? body.defaultPresetId : current.defaultPresetId,
+      defaultPersonaId:
+        body.defaultPersonaId !== undefined
+          ? optionalSafeId(body.defaultPersonaId)
+          : coerceSafeId(current.defaultPersonaId),
+      defaultCharacterId:
+        body.defaultCharacterId !== undefined
+          ? optionalSafeId(body.defaultCharacterId)
+          : coerceSafeId(current.defaultCharacterId),
+      defaultPresetId:
+        body.defaultPresetId !== undefined
+          ? optionalSafeId(body.defaultPresetId)
+          : coerceSafeId(current.defaultPresetId),
       showTimestamps: body.showTimestamps !== undefined ? Boolean(body.showTimestamps) : current.showTimestamps,
       showAvatars: body.showAvatars !== undefined ? Boolean(body.showAvatars) : current.showAvatars,
       fontScale: Math.min(1.4, Math.max(0.85, Number(body.fontScale ?? current.fontScale) || 1)),
@@ -1718,16 +1769,18 @@ async function handleApi(req, res, url) {
     const settings = await getSettings(PATHS);
     const modeId = resolveModeId(body.modeId || settings.activeMode || 'chat');
     const mode = getMode(modeId);
-    const characterId = body.characterId !== undefined
-      ? body.characterId
-      : mode.layout.showCharacter
-        ? settings.defaultCharacterId
-        : null;
-    const personaId = body.personaId !== undefined
-      ? body.personaId
-      : mode.layout.showPersona
-        ? settings.defaultPersonaId
-        : null;
+    const characterId =
+      body.characterId !== undefined
+        ? optionalSafeId(body.characterId)
+        : mode.layout.showCharacter
+          ? coerceSafeId(settings.defaultCharacterId)
+          : null;
+    const personaId =
+      body.personaId !== undefined
+        ? optionalSafeId(body.personaId)
+        : mode.layout.showPersona
+          ? coerceSafeId(settings.defaultPersonaId)
+          : null;
     let folderId = null;
     if (body.folderId) {
       folderId = folders.assertFolderId(body.folderId);
@@ -1737,11 +1790,11 @@ async function handleApi(req, res, url) {
     const inherit = Boolean(folderId);
     const presetId =
       body.presetId !== undefined
-        ? body.presetId || null
+        ? optionalSafeId(body.presetId)
         : inherit
           ? null
-          : settings.defaultPresetId || null;
-    const character = characterId ? await readJsonFile(path.join(PATHS.characters, `${characterId}.json`)) : null;
+          : coerceSafeId(settings.defaultPresetId);
+    const character = await loadLibraryJson(PATHS.characters, characterId);
     const chat = {
       id: id('chat'),
       title: String(body.title || character?.name || `${mode.name} chat`).slice(0, 120),
@@ -1794,6 +1847,7 @@ async function handleApi(req, res, url) {
     const chatId = safeId(parts[0]);
     const action = parts[1] || '';
     const sub = parts[2] || '';
+    const streamId = streamKey(req.user.id, chatId);
     const file = path.join(PATHS.chats, `${chatId}.json`);
     const chat = await readJsonFile(file);
     if (!chat) return json(res, 404, { error: 'Chat not found' });
@@ -1819,9 +1873,11 @@ async function handleApi(req, res, url) {
         ...chat,
         title: body.title !== undefined ? String(body.title).slice(0, 120) : chat.title,
         modeId: body.modeId ? resolveModeId(body.modeId) : resolveModeId(chat.modeId || 'chat'),
-        characterId: body.characterId !== undefined ? body.characterId : chat.characterId,
-        personaId: body.personaId !== undefined ? body.personaId : chat.personaId,
-        presetId: body.presetId !== undefined ? body.presetId : chat.presetId,
+        characterId:
+          body.characterId !== undefined ? optionalSafeId(body.characterId) : coerceSafeId(chat.characterId),
+        personaId:
+          body.personaId !== undefined ? optionalSafeId(body.personaId) : coerceSafeId(chat.personaId),
+        presetId: body.presetId !== undefined ? optionalSafeId(body.presetId) : coerceSafeId(chat.presetId),
         folderId: nextFolderId,
         model:
           body.model !== undefined
@@ -1861,7 +1917,7 @@ async function handleApi(req, res, url) {
 
     if (method === 'DELETE' && !action) {
       if (!requireSameOrigin(req, res)) return;
-      const ctrl = activeStreams.get(chatId);
+      const ctrl = activeStreams.get(streamId);
       if (ctrl) ctrl.abort();
       await fsp.unlink(file).catch(() => {});
       await workspace.removeWorkspace(PATHS.workspaces, chatId).catch(() => {});
@@ -1952,7 +2008,7 @@ async function handleApi(req, res, url) {
 
     if (method === 'POST' && action === 'stop') {
       if (!requireSameOrigin(req, res)) return;
-      const ctrl = activeStreams.get(chatId);
+      const ctrl = activeStreams.get(streamId);
       if (ctrl) ctrl.abort();
       return json(res, 200, { ok: true });
     }
@@ -1964,22 +2020,16 @@ async function handleApi(req, res, url) {
       if (!content) return json(res, 400, { error: 'Message required' });
       if (content.length > MAX_MESSAGE_CHARS) return json(res, 400, { error: 'Message too long' });
 
-      if (activeStreams.has(chatId)) {
+      if (activeStreams.has(streamId)) {
         return json(res, 409, { error: 'Chat is already generating' });
       }
 
       const folder = await loadChatFolder(chat, PATHS);
-      const character = chat.characterId
-        ? await readJsonFile(path.join(PATHS.characters, `${chat.characterId}.json`))
-        : null;
-      const persona = chat.personaId
-        ? await readJsonFile(path.join(PATHS.personas, `${chat.personaId}.json`))
-        : null;
+      const character = await loadLibraryJson(PATHS.characters, chat.characterId);
+      const persona = await loadLibraryJson(PATHS.personas, chat.personaId);
       const settingsForPreset = await getSettings(PATHS);
       const presetId = pickInherit(chat.presetId, folder?.presetId, settingsForPreset.defaultPresetId);
-      const preset = presetId
-        ? await readJsonFile(path.join(PATHS.presets, `${presetId}.json`))
-        : null;
+      const preset = await loadLibraryJson(PATHS.presets, presetId);
       const mode = getMode(chat.modeId || 'chat');
 
       const userMsg = {
@@ -2008,7 +2058,7 @@ async function handleApi(req, res, url) {
       });
 
       const controller = new AbortController();
-      activeStreams.set(chatId, controller);
+      activeStreams.set(streamId, controller);
 
       res.writeHead(200, {
         'Content-Type': 'text/event-stream; charset=utf-8',
@@ -2030,7 +2080,7 @@ async function handleApi(req, res, url) {
         createdAt: new Date().toISOString(),
       };
 
-      const ownsStream = () => activeStreams.get(chatId) === controller;
+      const ownsStream = () => activeStreams.get(streamId) === controller;
 
       try {
         const settingsForModel = await getSettings(PATHS);
@@ -2068,7 +2118,7 @@ async function handleApi(req, res, url) {
           message: assistantMsg.content ? assistantMsg : null,
         });
       } finally {
-        if (ownsStream()) activeStreams.delete(chatId);
+        if (ownsStream()) activeStreams.delete(streamId);
         res.end();
       }
       return;
@@ -2088,8 +2138,8 @@ async function handleApi(req, res, url) {
 
       // Claim stream slot before abort so superseded handlers skip disk writes
       const controller = new AbortController();
-      const existing = activeStreams.get(chatId);
-      activeStreams.set(chatId, controller);
+      const existing = activeStreams.get(streamId);
+      activeStreams.set(streamId, controller);
       if (existing) existing.abort();
 
       let messages;
@@ -2101,17 +2151,11 @@ async function handleApi(req, res, url) {
         await writeJsonFile(file, chat);
 
         folder = await loadChatFolder(chat, PATHS);
-        const character = chat.characterId
-          ? await readJsonFile(path.join(PATHS.characters, `${chat.characterId}.json`))
-          : null;
-        const persona = chat.personaId
-          ? await readJsonFile(path.join(PATHS.personas, `${chat.personaId}.json`))
-          : null;
+        const character = await loadLibraryJson(PATHS.characters, chat.characterId);
+        const persona = await loadLibraryJson(PATHS.personas, chat.personaId);
         const settingsForPreset = await getSettings(PATHS);
         const presetId = pickInherit(chat.presetId, folder?.presetId, settingsForPreset.defaultPresetId);
-        const preset = presetId
-          ? await readJsonFile(path.join(PATHS.presets, `${presetId}.json`))
-          : null;
+        const preset = await loadLibraryJson(PATHS.presets, presetId);
         mode = getMode(chat.modeId || 'chat');
 
         messages = await assembleMessages({
@@ -2125,7 +2169,7 @@ async function handleApi(req, res, url) {
           paths: PATHS,
         });
       } catch (err) {
-        if (activeStreams.get(chatId) === controller) activeStreams.delete(chatId);
+        if (activeStreams.get(streamId) === controller) activeStreams.delete(streamId);
         return json(res, err.status || 500, { error: err.message || 'Regenerate failed' });
       }
 
@@ -2149,7 +2193,7 @@ async function handleApi(req, res, url) {
         createdAt: new Date().toISOString(),
       };
 
-      const ownsStream = () => activeStreams.get(chatId) === controller;
+      const ownsStream = () => activeStreams.get(streamId) === controller;
 
       try {
         const settingsForModel = await getSettings(PATHS);
@@ -2186,7 +2230,7 @@ async function handleApi(req, res, url) {
           message: assistantMsg.content ? assistantMsg : null,
         });
       } finally {
-        if (ownsStream()) activeStreams.delete(chatId);
+        if (ownsStream()) activeStreams.delete(streamId);
         res.end();
       }
       return;
@@ -2228,17 +2272,11 @@ async function handleApi(req, res, url) {
       if (!requireSameOrigin(req, res)) return;
       const body = await readJson(req);
       const folder = await loadChatFolder(chat, PATHS);
-      const character = chat.characterId
-        ? await readJsonFile(path.join(PATHS.characters, `${chat.characterId}.json`))
-        : null;
-      const persona = chat.personaId
-        ? await readJsonFile(path.join(PATHS.personas, `${chat.personaId}.json`))
-        : null;
+      const character = await loadLibraryJson(PATHS.characters, chat.characterId);
+      const persona = await loadLibraryJson(PATHS.personas, chat.personaId);
       const settingsForPreset = await getSettings(PATHS);
       const presetId = pickInherit(chat.presetId, folder?.presetId, settingsForPreset.defaultPresetId);
-      const preset = presetId
-        ? await readJsonFile(path.join(PATHS.presets, `${presetId}.json`))
-        : null;
+      const preset = await loadLibraryJson(PATHS.presets, presetId);
       const mode = getMode(chat.modeId || 'chat');
       const messages = await assembleMessages({
         chat,

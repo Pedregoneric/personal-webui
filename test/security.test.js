@@ -191,6 +191,15 @@ describe('multi-user auth foundation', () => {
     assert.match(src, /migrateFromEnvIfNeeded/);
     assert.match(src, /role:\s*req\.user\.role|req\.user\.role/);
     assert.match(src, /sessions\.createSession|createSession\(/);
+    assert.match(src, /optionalSafeId|loadLibraryJson/);
+    assert.match(src, /streamKey\(|userId\}:\$\{chatId|`\$\{userId\}:\$\{chatId\}`/);
+    assert.match(src, /DUMMY_LOGIN_SALT/);
+  });
+
+  it('login always uses dummy scrypt credentials for missing users', () => {
+    assert.ok(users.DUMMY_LOGIN_SALT);
+    assert.ok(users.DUMMY_LOGIN_HASH);
+    assert.equal(users.verifyPassword('anything-here!!', users.DUMMY_LOGIN_SALT, users.DUMMY_LOGIN_HASH), false);
   });
 
   it('migrates legacy flat data into per-user namespace idempotently', async () => {
@@ -233,5 +242,46 @@ describe('multi-user auth foundation', () => {
     } finally {
       await fsp.rm(dataDir, { recursive: true, force: true });
     }
+  });
+
+  it('resumes legacy moves when users.json exists but roots remain', async () => {
+    const dataDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'pwui-mig-resume-'));
+    try {
+      const admin = await users.createUser(dataDir, {
+        username: 'resume-admin',
+        password: 'password-resume-1',
+        role: 'admin',
+      });
+      await fsp.mkdir(path.join(dataDir, 'chats'), { recursive: true });
+      await fsp.writeFile(path.join(dataDir, 'chats', 'chat-resume.json'), JSON.stringify({ id: 'chat-resume' }));
+      const result = await users.migrateFromEnvIfNeeded(
+        dataDir,
+        {
+          WEBUI_USERNAME: 'ignored',
+          PASSWORD_SALT: 'a'.repeat(48),
+          PASSWORD_HASH: 'b'.repeat(128),
+        },
+        folders,
+      );
+      assert.equal(result.migrated, true);
+      assert.equal(result.resumed, true);
+      assert.equal(result.userId, admin.id);
+      const paths = users.userDataPaths(dataDir, admin.id);
+      assert.ok(fs.existsSync(path.join(paths.chats, 'chat-resume.json')));
+      assert.equal(fs.existsSync(path.join(dataDir, 'chats')), false);
+    } finally {
+      await fsp.rm(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  it('persists users.json before moving so crash cannot mint a new admin id', async () => {
+    const src = fs.readFileSync(path.join(__dirname, '..', 'lib', 'users.js'), 'utf8');
+    const marker = 'Persist admin before moving';
+    const markerIdx = src.indexOf(marker);
+    assert.ok(markerIdx > 0, 'expected migration safety comment');
+    const after = src.slice(markerIdx);
+    const saveIdx = after.indexOf('await saveUsers(dataDir, [admin])');
+    const moveIdx = after.indexOf('await moveLegacyDataIntoUser(dataDir, admin.id');
+    assert.ok(saveIdx >= 0 && moveIdx > saveIdx, 'saveUsers must precede moveLegacyDataIntoUser for new admins');
   });
 });
