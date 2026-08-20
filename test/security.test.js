@@ -347,3 +347,104 @@ describe('multi-user auth foundation', () => {
     assert.ok(saveIdx >= 0 && moveIdx > saveIdx, 'saveUsers must precede moveLegacyDataIntoUser for new admins');
   });
 });
+
+describe('user isolation + admin / regen source guards', () => {
+  it('userDataPaths nests chats folders workspaces media under users/{id}', () => {
+    const tmp = path.join(os.tmpdir(), 'pwui-iso-paths');
+    const paths = users.userDataPaths(tmp, 'user-iso1');
+    const root = path.join(tmp, 'users', 'user-iso1');
+    assert.equal(paths.root, root);
+    assert.equal(paths.chats, path.join(root, 'chats'));
+    assert.equal(paths.folders, path.join(root, 'folders.json'));
+    assert.equal(paths.workspaces, path.join(root, 'workspaces'));
+    assert.equal(paths.media, path.join(root, 'media'));
+    assert.equal(paths.settings, path.join(root, 'settings.json'));
+    assert.ok(!paths.chats.includes(`${path.sep}users${path.sep}user-other`));
+  });
+
+  it('server scopes PATHS via ensureUserData(req.user.id) and isolates streams by userId', () => {
+    const src = fs.readFileSync(path.join(__dirname, '..', 'server.js'), 'utf8');
+    assert.match(src, /ensureUserData\(req\.user\.id\)/);
+    assert.match(src, /users\.userDataPaths\(DATA_DIR,\s*userId\)|function userDataPaths\(userId\)/);
+    assert.match(src, /streamKey\(|`\$\{userId\}:\$\{chatId\}`/);
+    assert.match(src, /paths\.workspaces|PATHS\.workspaces/);
+    assert.match(src, /migrateFromEnvIfNeeded/);
+  });
+
+  it('admin and signup routes use 403 patterns', () => {
+    const src = fs.readFileSync(path.join(__dirname, '..', 'server.js'), 'utf8');
+    assert.match(src, /json\(res,\s*403,\s*\{\s*error:\s*'Admin only'\s*\}\)/);
+    assert.match(src, /json\(res,\s*403,\s*\{\s*error:\s*'Signup disabled'\s*\}\)/);
+    assert.match(src, /json\(res,\s*403,\s*\{\s*error:\s*'Forbidden origin'\s*\}\)/);
+    assert.match(src, /async function requireAdmin/);
+    assert.match(src, /req\.user\.role\s*!==\s*'admin'/);
+    assert.ok(src.includes("'/api/admin/users'") || /\/api\/admin\/users/.test(src));
+    assert.ok(src.includes("'/api/admin/app'") || /\/api\/admin\/app/.test(src));
+  });
+
+  it('regenerate and branch routes exist and require sameOrigin', () => {
+    const src = fs.readFileSync(path.join(__dirname, '..', 'server.js'), 'utf8');
+    const regenIdx = src.indexOf("action === 'regenerate'");
+    const branchIdx = src.indexOf("action === 'branch'");
+    assert.ok(regenIdx > 0, 'expected regenerate action');
+    assert.ok(branchIdx > 0, 'expected branch action');
+    const regenSlice = src.slice(regenIdx, regenIdx + 220);
+    const branchSlice = src.slice(branchIdx, branchIdx + 220);
+    assert.match(regenSlice, /requireSameOrigin\(req,\s*res\)/);
+    assert.match(branchSlice, /requireSameOrigin\(req,\s*res\)/);
+    assert.match(src, /Can only regenerate assistant messages/);
+    assert.match(src, /Branch of /);
+  });
+
+  it('tipUrl normalize and last-admin guards appear in users source', () => {
+    const usersSrc = fs.readFileSync(path.join(__dirname, '..', 'lib', 'users.js'), 'utf8');
+    assert.match(usersSrc, /function normalizeTipUrl/);
+    assert.match(usersSrc, /u\.protocol === 'http:' \|\| u\.protocol === 'https:'/);
+    assert.match(usersSrc, /Tip URL must be http\(s\) or empty/);
+    assert.match(usersSrc, /Cannot remove the last admin/);
+    assert.match(usersSrc, /function assertKeepsEnabledAdmin|countEnabledAdmins/);
+    assert.equal(users.normalizeTipUrl(''), '');
+    assert.equal(users.normalizeTipUrl('https://tips.example/path'), 'https://tips.example/path');
+    assert.equal(users.normalizeTipUrl('ftp://evil'), users.defaultAppConfig().tipUrl);
+  });
+});
+
+describe('folders inherit semantics', () => {
+  it('normalizeFolder nulls model/sampling/preset to mean inherit', () => {
+    const folder = folders.normalizeFolder(
+      {
+        name: 'Work',
+        systemPrompt: 'Be brief',
+        stylePrompt: '',
+        model: null,
+        temperature: null,
+        topP: null,
+        maxTokens: null,
+        presetId: null,
+      },
+      { isCreate: true },
+    );
+    assert.ok(folder.id.startsWith('folder-'));
+    assert.equal(folder.name, 'Work');
+    assert.equal(folder.systemPrompt, 'Be brief');
+    assert.equal(folder.model, null);
+    assert.equal(folder.temperature, null);
+    assert.equal(folder.topP, null);
+    assert.equal(folder.maxTokens, null);
+    assert.equal(folder.presetId, null);
+  });
+
+  it('server pickInherit prefers chat over folder over mode', () => {
+    const src = fs.readFileSync(path.join(__dirname, '..', 'server.js'), 'utf8');
+    assert.match(src, /function pickInherit\(/);
+    assert.match(src, /function resolveGenerationParams/);
+    assert.match(
+      src,
+      /pickInherit\(\s*body\.model,\s*chat\?\.model,\s*folder\?\.model/s,
+    );
+    assert.match(
+      src,
+      /pickInherit\(body\.temperature,\s*chat\?\.temperature,\s*folder\?\.temperature/s,
+    );
+  });
+});

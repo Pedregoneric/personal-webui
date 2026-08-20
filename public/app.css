@@ -466,6 +466,17 @@ body[data-layout="code"] .empty-inner h1 { font-size: 1.25rem; }
     padding: 0 0.55rem;
     font-size: 0.7rem;
   }
+  .folder-caret-btn {
+    width: 2.75rem;
+    height: 2.75rem;
+  }
+  .folder-toggle {
+    min-height: 2.75rem;
+  }
+  .folder-actions {
+    opacity: 1;
+    pointer-events: auto;
+  }
 }
 .thread-action:hover {
   background: var(--bg-elevated);
@@ -1162,6 +1173,17 @@ a.text-link { display: inline; }
 .message:focus-within .message-actions {
   opacity: 1;
   pointer-events: auto;
+}
+@media (pointer: coarse) {
+  .message-actions {
+    opacity: 1;
+    pointer-events: auto;
+  }
+  .msg-action {
+    min-height: 2.75rem;
+    min-width: 2.75rem;
+    padding: 0 0.55rem;
+  }
 }
 .message.user .message-actions { justify-content: flex-end; }
 .msg-action {
@@ -2359,7 +2381,27 @@ label input:focus, label select:focus, label textarea:focus,
   font-weight: 600;
 }
 @media (max-width: 720px) {
+  .admin-main { padding: 0.75rem 0.75rem 1.5rem; }
+  .admin-card { padding: 0.85rem 0.8rem 1rem; }
   .admin-create-form,
   .admin-prefs-form { grid-template-columns: 1fr; }
   .admin-row-actions { justify-content: flex-start; }
+  .admin-table { font-size: 0.8rem; }
+  .admin-table th,
+  .admin-table td { padding: 0.55rem 0.35rem; }
+  .admin-card-head { flex-wrap: wrap; }
+}
+@media (pointer: coarse) {
+  .admin-create-form input,
+  .admin-create-form select,
+  .admin-prefs-form input,
+  .admin-inline-select,
+  .admin-dialog-body input {
+    min-height: 2.75rem;
+  }
+  .admin-row-actions button,
+  .admin-form-actions button,
+  .admin-card-head button {
+    min-height: 2.75rem;
+  }
 }
