@@ -279,18 +279,29 @@ body[data-layout="code"] .empty-inner h1 { font-size: 1.25rem; }
   scrollbar-color: var(--bg-elevated) transparent;
 }
 .thread-item {
-  display: block;
+  position: relative;
+  display: flex;
+  align-items: flex-start;
+  gap: 0.25rem;
   width: 100%;
   margin: 0.125rem 0;
-  padding: 0.625rem 0.75rem;
+  padding: 0.35rem 0.35rem 0.35rem 0.4rem;
   border-radius: 0.7rem;
-  text-align: left;
   color: var(--text);
   font-size: 0.875rem;
 }
-.thread-item:hover { background: var(--bg-hover); }
+.thread-item:hover,
+.thread-item:focus-within { background: var(--bg-hover); }
 .thread-item.active {
   background: var(--bg-active);
+}
+.thread-item-main {
+  flex: 1;
+  min-width: 0;
+  padding: 0.275rem 0.35rem;
+  border-radius: 0.5rem;
+  text-align: left;
+  color: inherit;
 }
 .thread-item strong {
   display: block;
@@ -300,7 +311,7 @@ body[data-layout="code"] .empty-inner h1 { font-size: 1.25rem; }
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.thread-item > span {
+.thread-item-main > span {
   display: block;
   margin-top: 0.125rem;
   color: var(--text-3);
@@ -308,6 +319,45 @@ body[data-layout="code"] .empty-inner h1 { font-size: 1.25rem; }
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.thread-actions {
+  display: flex;
+  flex-shrink: 0;
+  gap: 0.1rem;
+  padding-top: 0.15rem;
+  opacity: 0.55;
+  transition: opacity 0.15s var(--ease);
+}
+.thread-item:hover .thread-actions,
+.thread-item:focus-within .thread-actions {
+  opacity: 1;
+}
+@media (hover: hover) and (pointer: fine) {
+  .thread-actions {
+    opacity: 0;
+    pointer-events: none;
+  }
+  .thread-item:hover .thread-actions,
+  .thread-item:focus-within .thread-actions {
+    opacity: 1;
+    pointer-events: auto;
+  }
+}
+.thread-action {
+  min-height: 1.5rem;
+  padding: 0 0.4rem;
+  border-radius: 0.4rem;
+  color: var(--text-3);
+  font-size: 0.65rem;
+  font-weight: 500;
+  white-space: nowrap;
+}
+.thread-action:hover {
+  background: var(--bg-elevated);
+  color: var(--text);
+}
+.thread-action.danger:hover {
+  color: var(--danger);
 }
 .thread-meta-row { display: none; }
 

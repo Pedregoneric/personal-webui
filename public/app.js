@@ -830,18 +830,52 @@ function renderChatList() {
   list.innerHTML = items
     .map((c) => {
       const preview = (c.preview || '').replace(/\s+/g, ' ').replace(/!\[.*?\]\([^)]*\)/g, '🖼').trim();
+      const pinLabel = c.pinned ? 'Unpin' : 'Pin';
       return `
-    <button type="button" class="thread-item${state.chat?.id === c.id ? ' active' : ''}" data-chat-id="${escapeHtml(c.id)}">
-      <strong>${c.pinned ? '● ' : ''}${escapeHtml(c.title || 'Untitled')}</strong>
-      <span>${escapeHtml(preview || 'No messages yet')}</span>
-      <div class="thread-meta-row">
-        <span class="thread-tag">${escapeHtml(getModeName(c.modeId))}</span>
-        ${c.characterId ? `<span class="thread-tag dim">${escapeHtml(characterName(c.characterId))}</span>` : ''}
-        <span class="thread-time">${escapeHtml(formatTime(c.updatedAt) || '')}</span>
+    <div class="thread-item${state.chat?.id === c.id ? ' active' : ''}" data-chat-id="${escapeHtml(c.id)}">
+      <button type="button" class="thread-item-main">
+        <strong>${c.pinned ? '● ' : ''}${escapeHtml(c.title || 'Untitled')}</strong>
+        <span>${escapeHtml(preview || 'No messages yet')}</span>
+        <div class="thread-meta-row">
+          <span class="thread-tag">${escapeHtml(getModeName(c.modeId))}</span>
+          ${c.characterId ? `<span class="thread-tag dim">${escapeHtml(characterName(c.characterId))}</span>` : ''}
+          <span class="thread-time">${escapeHtml(formatTime(c.updatedAt) || '')}</span>
+        </div>
+      </button>
+      <div class="thread-actions">
+        <button type="button" class="thread-action" data-thread-action="pin" title="${pinLabel}" aria-label="${pinLabel}">${pinLabel}</button>
+        <button type="button" class="thread-action danger" data-thread-action="delete" title="Delete" aria-label="Delete">Delete</button>
       </div>
-    </button>`;
+    </div>`;
     })
     .join('');
+}
+
+async function togglePinChat(id) {
+  const summary = state.chats.find((c) => c.id === id);
+  const currentlyPinned = Boolean(
+    summary?.pinned ?? (state.chat?.id === id ? state.chat.pinned : false),
+  );
+  const nextPinned = !currentlyPinned;
+  if (state.chat?.id === id) {
+    await patchChat({ pinned: nextPinned });
+    return;
+  }
+  await api(`/api/chats/${id}`, {
+    method: 'PATCH',
+    body: JSON.stringify({ pinned: nextPinned }),
+  });
+  await loadChats();
+}
+
+async function deleteChatFromList(id) {
+  if (!confirm('Delete this chat?')) return;
+  await api(`/api/chats/${id}`, { method: 'DELETE' });
+  if (state.chat?.id === id) {
+    state.chat = null;
+    renderConversation();
+  }
+  await loadChats();
 }
 
 function legacyModeMatch(chatMode, activeMode) {
@@ -1855,9 +1889,26 @@ async function initApp() {
   $('close-sidebar')?.addEventListener('click', closeSidebar);
   $('sidebar-scrim')?.addEventListener('click', closeSidebar);
   $('chat-list')?.addEventListener('click', (e) => {
-    const btn = e.target.closest('[data-chat-id]');
-    if (btn) {
-      selectChat(btn.dataset.chatId);
+    const actionBtn = e.target.closest('[data-thread-action]');
+    if (actionBtn) {
+      e.preventDefault();
+      e.stopPropagation();
+      const item = actionBtn.closest('[data-chat-id]');
+      if (!item) return;
+      const id = item.dataset.chatId;
+      const action = actionBtn.dataset.threadAction;
+      const run =
+        action === 'pin'
+          ? togglePinChat(id)
+          : action === 'delete'
+            ? deleteChatFromList(id)
+            : null;
+      run?.catch((err) => toast(err.message || 'Action failed'));
+      return;
+    }
+    const item = e.target.closest('[data-chat-id]');
+    if (item) {
+      selectChat(item.dataset.chatId);
       if (window.matchMedia('(max-width: 960px)').matches) closeSidebar();
     }
   });
