@@ -5,6 +5,11 @@ data/uploads/
 data/workspaces/
 data/settings.json
 data/folders.json
+data/users.json
+data/sessions.json
+data/app.json
+data/users/
+data/gallery.json
 node_modules/
 *.log
 .DS_Store

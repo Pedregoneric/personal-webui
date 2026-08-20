@@ -6,7 +6,7 @@
   <title>Personal WebUI · Sign in</title>
   <meta name="description" content="Sign in to your free self-hosted Personal WebUI.">
   <link rel="icon" href="/favicon.svg" type="image/svg+xml">
-  <link rel="stylesheet" href="/app.css?v=9">
+  <link rel="stylesheet" href="/app.css?v=17">
   <script src="/viewport.js"></script>
 </head>
 <body class="login-page" data-theme="dark" data-accent="neutral">
@@ -35,13 +35,31 @@
       <input id="password" name="password" type="password" autocomplete="current-password" required>
       <button class="btn-primary" type="submit">Log in</button>
       <p id="login-error" class="error" role="alert"></p>
+      <p class="secure-note" id="signup-switch" hidden style="margin-top:12px">
+        Need an account? <button type="button" class="linkish" id="show-signup" style="background:none;border:0;color:inherit;text-decoration:underline;cursor:pointer;padding:0">Sign up</button>
+      </p>
+    </form>
+
+    <form id="signup-form" method="post" action="/api/signup" autocomplete="on" hidden>
+      <label for="signup-username">Username</label>
+      <input id="signup-username" name="username" type="text" autocomplete="username" autocapitalize="none" autocorrect="off" spellcheck="false" maxlength="64" required>
+      <label for="signup-password">Password</label>
+      <input id="signup-password" name="password" type="password" autocomplete="new-password" minlength="12" maxlength="200" required>
+      <label for="signup-confirm">Confirm password</label>
+      <input id="signup-confirm" name="confirm" type="password" autocomplete="new-password" minlength="12" maxlength="200" required>
+      <button class="btn-primary" type="submit">Create account</button>
+      <p id="signup-error" class="error" role="alert"></p>
+      <p class="secure-note" style="margin-top:10px">Password must be at least 12 characters.</p>
+      <p class="secure-note" style="margin-top:12px">
+        Already have an account? <button type="button" class="linkish" id="show-login" style="background:none;border:0;color:inherit;text-decoration:underline;cursor:pointer;padding:0">Log in</button>
+      </p>
     </form>
 
     <p class="secure-note"><span>●</span> Local / Tailscale only</p>
     <p class="login-tip-link">
-      <a href="https://agentmediatools.com/tip?from=personal-webui" target="_blank" rel="noopener">Optional tip →</a>
+      <a id="tip-link" href="https://agentmediatools.com/tip?from=personal-webui" target="_blank" rel="noopener">Optional tip →</a>
     </p>
   </main>
-  <script src="/app.js?v=9"></script>
+  <script src="/app.js?v=19"></script>
 </body>
 </html>

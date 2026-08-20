@@ -12,6 +12,8 @@ const comfy = require('./lib/comfy');
 const llm = require('./lib/llm');
 const workspace = require('./lib/workspace');
 const folders = require('./lib/folders');
+const users = require('./lib/users');
+const sessions = require('./lib/sessions');
 
 const PROJECT_ROOT = __dirname;
 const PUBLIC_ROOT = path.join(PROJECT_ROOT, 'public');
@@ -34,79 +36,23 @@ const DATA_DIR = process.env.DATA_DIR || path.join(PROJECT_ROOT, 'data');
 const SESSION_HOURS = Math.min(168, Math.max(1, Number(process.env.SESSION_HOURS || 24)));
 const MAX_UPLOAD_BYTES = 25 * 1024 * 1024;
 const MAX_MESSAGE_CHARS = 100_000;
-const USERNAME_RE = /^[A-Za-z0-9._@+-]{1,64}$/;
+fs.mkdirSync(DATA_DIR, { recursive: true });
 
-const PATHS = {
-  chats: path.join(DATA_DIR, 'chats'),
-  personas: path.join(DATA_DIR, 'library', 'personas'),
-  characters: path.join(DATA_DIR, 'library', 'characters'),
-  presets: path.join(DATA_DIR, 'library', 'presets'),
-  media: path.join(DATA_DIR, 'media'),
-  uploads: path.join(DATA_DIR, 'uploads'),
-  workspaces: path.join(DATA_DIR, 'workspaces'),
-  settings: path.join(DATA_DIR, 'settings.json'),
-  galleryIndex: path.join(DATA_DIR, 'gallery.json'),
-  folders: path.join(DATA_DIR, 'folders.json'),
-};
-
-for (const dir of [
-  PATHS.chats,
-  PATHS.personas,
-  PATHS.characters,
-  PATHS.presets,
-  PATHS.media,
-  PATHS.uploads,
-  PATHS.workspaces,
-]) {
-  fs.mkdirSync(dir, { recursive: true });
-}
-folders.ensureStore(PATHS.folders);
-
-let authUsername = String(process.env.WEBUI_USERNAME || '').trim();
-let passwordSalt = process.env.PASSWORD_SALT || '';
-let passwordHash = process.env.PASSWORD_HASH || '';
-
-const sessions = new Map();
 const loginAttempts = new Map();
 const activeStreams = new Map(); // chatId -> AbortController
 
-function setupRequired() {
-  return !passwordSalt || !passwordHash;
+function userDataPaths(userId) {
+  return users.userDataPaths(DATA_DIR, userId);
 }
 
-function timingSafeEqualHex(a, b) {
-  try {
-    const left = Buffer.from(a, 'hex');
-    const right = Buffer.from(b, 'hex');
-    return left.length === right.length && crypto.timingSafeEqual(left, right);
-  } catch {
-    return false;
-  }
+function ensureUserData(userId) {
+  const paths = userDataPaths(userId);
+  users.ensureUserDirs(paths, folders);
+  return paths;
 }
 
-function timingSafeEqualString(a, b) {
-  const left = Buffer.from(String(a));
-  const right = Buffer.from(String(b));
-  if (left.length !== right.length) {
-    crypto.timingSafeEqual(left, left);
-    return false;
-  }
-  return crypto.timingSafeEqual(left, right);
-}
-
-function verifyPassword(password) {
-  if (setupRequired()) return false;
-  const actual = crypto.scryptSync(String(password), passwordSalt, 64).toString('hex');
-  return timingSafeEqualHex(actual, passwordHash);
-}
-
-function issueSession(res) {
-  const token = crypto.randomBytes(32).toString('hex');
-  sessions.set(token, Date.now() + SESSION_HOURS * 3600000);
-  res.setHeader(
-    'Set-Cookie',
-    `personal_webui_session=${token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${SESSION_HOURS * 3600}`,
-  );
+async function setupRequired() {
+  return !(await users.hasAnyUsers(DATA_DIR));
 }
 
 function parseCookies(req) {
@@ -120,20 +66,46 @@ function parseCookies(req) {
   return out;
 }
 
-function isAuthed(req) {
+async function issueSession(res, userId) {
+  const session = await sessions.createSession(DATA_DIR, userId, SESSION_HOURS);
+  res.setHeader(
+    'Set-Cookie',
+    `personal_webui_session=${session.token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${session.maxAgeSec}`,
+  );
+  return session;
+}
+
+async function loadSessionUser(req) {
   const token = parseCookies(req).personal_webui_session;
-  const expires = token && sessions.get(token);
-  if (!expires) return false;
-  if (Date.now() > expires) {
-    sessions.delete(token);
+  const session = await sessions.getSession(DATA_DIR, token);
+  if (!session) return null;
+  const user = await users.findById(DATA_DIR, session.userId);
+  if (!user || user.disabled) {
+    await sessions.destroySession(DATA_DIR, token);
+    return null;
+  }
+  return { token, session, user };
+}
+
+async function isAuthed(req) {
+  return Boolean(await loadSessionUser(req));
+}
+
+async function requireAuth(req, res) {
+  const loaded = await loadSessionUser(req);
+  if (!loaded) {
+    json(res, 401, { error: 'Unauthorized' });
     return false;
   }
+  req.user = users.publicUser(loaded.user);
+  req.sessionToken = loaded.token;
   return true;
 }
 
-function requireAuth(req, res) {
-  if (!isAuthed(req)) {
-    json(res, 401, { error: 'Unauthorized' });
+async function requireAdmin(req, res) {
+  if (!(await requireAuth(req, res))) return false;
+  if (req.user.role !== 'admin') {
+    json(res, 403, { error: 'Admin only' });
     return false;
   }
   return true;
@@ -310,7 +282,10 @@ async function writeJsonFile(file, data) {
   await fsp.rename(tmp, file);
 }
 
-async function getSettings() {
+async function getSettings(paths) {
+  if (!paths || !paths.settings) {
+    throw new Error('getSettings requires user paths');
+  }
   const defaults = {
     theme: 'dark',
     accent: 'neutral',
@@ -329,7 +304,7 @@ async function getSettings() {
     comfy: comfy.defaultComfySettings(),
     llm: llm.defaultProvidersFromEnv(),
   };
-  const saved = (await readJsonFile(PATHS.settings, {})) || {};
+  const saved = (await readJsonFile(paths.settings, {})) || {};
   const merged = { ...defaults, ...saved };
   merged.comfy = comfy.normalizeComfySettings({ ...defaults.comfy, ...(saved.comfy || {}) });
   merged.llm = llm.normalizeLlmSettings(saved.llm || defaults.llm, defaults.llm);
@@ -466,10 +441,10 @@ function resolveGenerationParams({ chat, folder, mode, settings, body = {} }) {
   return { model, temperature, topP, maxTokens };
 }
 
-async function loadChatFolder(chat) {
+async function loadChatFolder(chat, paths) {
   if (!chat?.folderId) return null;
   try {
-    return await folders.get(PATHS.folders, chat.folderId);
+    return await folders.get(paths.folders, chat.folderId);
   } catch {
     return null;
   }
@@ -489,7 +464,7 @@ function nullableSamplingString(value, fallback) {
   return s || null;
 }
 
-async function assembleMessages({ chat, character, persona, preset, mode, folder, userMessage, openPath }) {
+async function assembleMessages({ chat, character, persona, preset, mode, folder, userMessage, openPath, paths }) {
   const messages = [];
   const system = buildSystemPrompt({
     character,
@@ -508,10 +483,10 @@ async function assembleMessages({ chat, character, persona, preset, mode, folder
     });
   }
 
-  if (mode?.id === 'code' && chat?.id) {
+  if (mode?.id === 'code' && chat?.id && paths?.workspaces) {
     try {
-      await workspace.ensureWorkspace(PATHS.workspaces, chat.id);
-      const ctx = await workspace.buildContext(PATHS.workspaces, chat.id, {
+      await workspace.ensureWorkspace(paths.workspaces, chat.id);
+      const ctx = await workspace.buildContext(paths.workspaces, chat.id, {
         openPath: openPath || undefined,
         budgetChars: 50_000,
       });
@@ -579,13 +554,13 @@ function httpRequest(urlString, { method = 'GET', headers = {}, body = null, sig
 }
 
 async function streamChatCompletions(opts) {
-  const settings = await getSettings();
+  const settings = opts.settings;
+  if (!settings) throw new Error('streamChatCompletions requires settings');
   const provider = opts.provider || activeLlmProvider(settings);
   return llm.streamChatCompletions(provider, opts);
 }
 
-async function listModels(providerId) {
-  const settings = await getSettings();
+async function listModels(settings, providerId) {
   const provider = llm.getProvider(settings.llm, providerId);
   const result = await llm.listModels(provider);
   return {
@@ -673,15 +648,15 @@ function parseMultipart(buf, boundary) {
   return parts;
 }
 
-async function getGallery() {
-  return (await readJsonFile(PATHS.galleryIndex, { items: [] })) || { items: [] };
+async function getGallery(paths) {
+  return (await readJsonFile(paths.galleryIndex, { items: [] })) || { items: [] };
 }
 
-async function addGalleryItem(item) {
-  const gallery = await getGallery();
+async function addGalleryItem(paths, item) {
+  const gallery = await getGallery(paths);
   gallery.items.unshift(item);
   gallery.items = gallery.items.slice(0, 500);
-  await writeJsonFile(PATHS.galleryIndex, gallery);
+  await writeJsonFile(paths.galleryIndex, gallery);
   return item;
 }
 
@@ -694,11 +669,16 @@ async function handleApi(req, res, url) {
   }
 
   if (method === 'GET' && p === '/api/setup-status') {
-    const settings = await getSettings();
-    const provider = activeLlmProvider(settings);
+    const needed = await setupRequired();
+    const app = await users.loadAppConfig(DATA_DIR);
+    const envLlm = { llm: llm.defaultProvidersFromEnv() };
+    const provider = activeLlmProvider(envLlm);
     return json(res, 200, {
-      setupRequired: setupRequired(),
-      hasUsername: Boolean(authUsername),
+      setupRequired: needed,
+      hasUsername: !needed,
+      signupEnabled: Boolean(app.signupEnabled) && !needed,
+      tipUrl: app.tipUrl,
+      brandTitle: app.brandTitle,
       provider: provider?.name || 'none',
       hasApiKey: Boolean(provider?.apiKey) || provider?.requiresKey === false,
     });
@@ -706,32 +686,20 @@ async function handleApi(req, res, url) {
 
   if (method === 'POST' && p === '/api/setup') {
     if (!requireSameOrigin(req, res)) return;
-    if (!setupRequired()) return json(res, 400, { error: 'Setup already complete' });
+    if (!(await setupRequired())) return json(res, 400, { error: 'Setup already complete' });
     const body = await readJson(req);
     const username = String(body.username || '').trim();
     const password = String(body.password || '');
-    if (!USERNAME_RE.test(username)) return json(res, 400, { error: 'Invalid username' });
-    if (password.length < 12 || password.length > 200) {
-      return json(res, 400, { error: 'Password must be 12–200 characters' });
+    try {
+      const user = await users.createUser(DATA_DIR, { username, password, role: 'admin' });
+      ensureUserData(user.id);
+      sessions.ensureStore(DATA_DIR);
+      await users.saveAppConfig(DATA_DIR, await users.loadAppConfig(DATA_DIR));
+      await issueSession(res, user.id);
+      return json(res, 200, { ok: true });
+    } catch (err) {
+      return json(res, err.status || 400, { error: err.message || 'Setup failed' });
     }
-    const salt = crypto.randomBytes(24).toString('hex');
-    const hash = crypto.scryptSync(password, salt, 64).toString('hex');
-    authUsername = username;
-    passwordSalt = salt;
-    passwordHash = hash;
-    const envPath = path.join(PROJECT_ROOT, '.env');
-    let env = fs.existsSync(envPath) ? fs.readFileSync(envPath, 'utf8') : '';
-    const setLine = (key, value) => {
-      const re = new RegExp(`^${key}=.*$`, 'm');
-      if (re.test(env)) env = env.replace(re, `${key}=${value}`);
-      else env += `${env.endsWith('\n') || !env ? '' : '\n'}${key}=${value}\n`;
-    };
-    setLine('WEBUI_USERNAME', username);
-    setLine('PASSWORD_SALT', salt);
-    setLine('PASSWORD_HASH', hash);
-    fs.writeFileSync(envPath, env, { mode: 0o600 });
-    issueSession(res);
-    return json(res, 200, { ok: true });
   }
 
   if (method === 'POST' && p === '/api/login') {
@@ -741,28 +709,58 @@ async function handleApi(req, res, url) {
     const body = await readJson(req);
     const username = String(body.username || '').trim();
     const password = String(body.password || '');
-    if (setupRequired()) return json(res, 400, { error: 'Setup required' });
-    if (!timingSafeEqualString(username, authUsername) || !verifyPassword(password)) {
+    if (await setupRequired()) return json(res, 400, { error: 'Setup required' });
+    const user = await users.findByUsername(DATA_DIR, username);
+    if (!user || user.disabled || !users.verifyPassword(password, user.salt, user.hash)) {
       return json(res, 401, { error: 'Invalid credentials' });
     }
-    issueSession(res);
+    await issueSession(res, user.id);
     return json(res, 200, { ok: true });
+  }
+
+  if (method === 'POST' && p === '/api/signup') {
+    if (!requireSameOrigin(req, res)) return;
+    const ip = req.socket.remoteAddress || 'unknown';
+    if (!rateLimitLogin(ip)) return json(res, 429, { error: 'Too many attempts' });
+    if (await setupRequired()) return json(res, 400, { error: 'Setup required' });
+    const app = await users.loadAppConfig(DATA_DIR);
+    if (!app.signupEnabled) return json(res, 403, { error: 'Signup disabled' });
+    const body = await readJson(req);
+    try {
+      const user = await users.createUser(DATA_DIR, {
+        username: body.username,
+        password: body.password,
+        role: 'user',
+      });
+      ensureUserData(user.id);
+      await issueSession(res, user.id);
+      return json(res, 201, { ok: true, user: users.publicUser(user) });
+    } catch (err) {
+      return json(res, err.status || 400, { error: err.message || 'Signup failed' });
+    }
   }
 
   if (method === 'POST' && p === '/api/logout') {
     if (!requireSameOrigin(req, res)) return;
     const token = parseCookies(req).personal_webui_session;
-    if (token) sessions.delete(token);
+    if (token) await sessions.destroySession(DATA_DIR, token);
     res.setHeader('Set-Cookie', 'personal_webui_session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0');
     return json(res, 200, { ok: true });
   }
 
   if (method === 'GET' && p === '/api/me') {
-    if (!isAuthed(req)) return json(res, 401, { error: 'Unauthorized' });
-    const settings = await getSettings();
+    if (!(await requireAuth(req, res))) return;
+    const PATHS = ensureUserData(req.user.id);
+    const settings = await getSettings(PATHS);
     const provider = activeLlmProvider(settings);
+    const app = await users.loadAppConfig(DATA_DIR);
     return json(res, 200, {
-      username: authUsername,
+      id: req.user.id,
+      username: req.user.username,
+      role: req.user.role,
+      signupEnabled: Boolean(app.signupEnabled),
+      tipUrl: app.tipUrl,
+      brandTitle: app.brandTitle,
       provider: provider
         ? {
             id: provider.id,
@@ -778,11 +776,67 @@ async function handleApi(req, res, url) {
     });
   }
 
+  // Admin user management (minimal foundation for PR5)
+  if (method === 'GET' && p === '/api/admin/users') {
+    if (!(await requireAdmin(req, res))) return;
+    return json(res, 200, { items: await users.listUsers(DATA_DIR) });
+  }
+
+  if (method === 'POST' && p === '/api/admin/users') {
+    if (!(await requireAdmin(req, res))) return;
+    if (!requireSameOrigin(req, res)) return;
+    const body = await readJson(req);
+    try {
+      const user = await users.createUser(DATA_DIR, {
+        username: body.username,
+        password: body.password,
+        role: body.role === 'admin' ? 'admin' : 'user',
+      });
+      ensureUserData(user.id);
+      return json(res, 201, users.publicUser(user));
+    } catch (err) {
+      return json(res, err.status || 400, { error: err.message || 'Create failed' });
+    }
+  }
+
+  if (method === 'PATCH' && p.startsWith('/api/admin/users/')) {
+    if (!(await requireAdmin(req, res))) return;
+    if (!requireSameOrigin(req, res)) return;
+    const rest = p.slice('/api/admin/users/'.length);
+    const parts = rest.split('/').filter(Boolean);
+    const userId = safeId(parts[0]);
+    const body = await readJson(req);
+    try {
+      if (parts[1] === 'reset-password') {
+        const updated = await users.resetPassword(DATA_DIR, userId, body.password);
+        await sessions.destroySessionsForUser(DATA_DIR, userId);
+        return json(res, 200, updated);
+      }
+      let updated = null;
+      if (body.disabled !== undefined) {
+        updated = await users.setDisabled(DATA_DIR, userId, body.disabled);
+        if (body.disabled) await sessions.destroySessionsForUser(DATA_DIR, userId);
+      }
+      if (body.role !== undefined) {
+        updated = await users.setRole(DATA_DIR, userId, body.role);
+      }
+      if (!updated) {
+        const existing = await users.findById(DATA_DIR, userId);
+        if (!existing) return json(res, 404, { error: 'User not found' });
+        updated = users.publicUser(existing);
+      }
+      return json(res, 200, updated);
+    } catch (err) {
+      return json(res, err.status || 400, { error: err.message || 'Update failed' });
+    }
+  }
+
   // Everything below requires auth
-  if (!requireAuth(req, res)) return;
+  if (!(await requireAuth(req, res))) return;
+  const PATHS = ensureUserData(req.user.id);
 
   if (method === 'GET' && p === '/api/settings') {
-    const settings = await getSettings();
+    const settings = await getSettings(PATHS);
     // Never send raw API keys to the browser
     return json(res, 200, {
       ...settings,
@@ -793,7 +847,7 @@ async function handleApi(req, res, url) {
   if (method === 'PUT' && p === '/api/settings') {
     if (!requireSameOrigin(req, res)) return;
     const body = await readJson(req);
-    const current = await getSettings();
+    const current = await getSettings(PATHS);
     const modeId = body.activeMode ? resolveModeId(body.activeMode) : resolveModeId(current.activeMode);
     const mode = getMode(modeId);
     const follow = body.modeFollowLayout !== undefined ? Boolean(body.modeFollowLayout) : current.modeFollowLayout;
@@ -859,14 +913,14 @@ async function handleApi(req, res, url) {
   }
 
   if (method === 'GET' && p === '/api/llm/providers') {
-    const settings = await getSettings();
+    const settings = await getSettings(PATHS);
     return json(res, 200, llm.publicLlmSettings(settings.llm));
   }
 
   if (method === 'POST' && p === '/api/llm/providers') {
     if (!requireSameOrigin(req, res)) return;
     const body = await readJson(req);
-    const settings = await getSettings();
+    const settings = await getSettings(PATHS);
     let provider;
     if (body.preset) {
       provider = llm.createFromPreset(body.preset, {
@@ -895,7 +949,7 @@ async function handleApi(req, res, url) {
 
   if ((method === 'PUT' || method === 'DELETE') && p.startsWith('/api/llm/providers/')) {
     if (!requireSameOrigin(req, res)) return;
-    const settings = await getSettings();
+    const settings = await getSettings(PATHS);
     const pid = safeId(p.slice('/api/llm/providers/'.length).split('/')[0]);
     if (method === 'DELETE') {
       const providers = (settings.llm.providers || []).filter((x) => x.id !== pid);
@@ -928,7 +982,7 @@ async function handleApi(req, res, url) {
   if (method === 'POST' && p === '/api/llm/test') {
     if (!requireSameOrigin(req, res)) return;
     const body = await readJson(req);
-    const settings = await getSettings();
+    const settings = await getSettings(PATHS);
     let provider;
     if (body.providerId) {
       provider = llm.getProvider(settings.llm, body.providerId);
@@ -946,7 +1000,7 @@ async function handleApi(req, res, url) {
   if (method === 'POST' && p === '/api/llm/active') {
     if (!requireSameOrigin(req, res)) return;
     const body = await readJson(req);
-    const settings = await getSettings();
+    const settings = await getSettings(PATHS);
     const provider = llm.getProvider(settings.llm, body.providerId);
     if (!provider) return json(res, 404, { error: 'Provider not found' });
     const nextLlm = llm.normalizeLlmSettings(
@@ -963,7 +1017,7 @@ async function handleApi(req, res, url) {
   }
 
   if (method === 'GET' && p === '/api/modes') {
-    const settings = await getSettings();
+    const settings = await getSettings(PATHS);
     return json(res, 200, {
       activeMode: settings.activeMode,
       items: listModes().map(modePublic),
@@ -972,18 +1026,19 @@ async function handleApi(req, res, url) {
 
   if (method === 'GET' && p === '/api/models') {
     const providerId = url.searchParams.get('provider') || undefined;
-    return json(res, 200, await listModels(providerId));
+    const settings = await getSettings(PATHS);
+    return json(res, 200, await listModels(settings, providerId));
   }
 
   // ComfyUI image generation
   if (method === 'GET' && p === '/api/comfy/status') {
-    const settings = await getSettings();
+    const settings = await getSettings(PATHS);
     const status = await comfy.getStatus(settings.comfy);
     return json(res, 200, { ...status, settings: settings.comfy });
   }
 
   if (method === 'GET' && p === '/api/comfy/models') {
-    const settings = await getSettings();
+    const settings = await getSettings(PATHS);
     if (!settings.comfy.enabled) return json(res, 400, { error: 'Image generation disabled' });
     try {
       const models = await comfy.listModels(settings.comfy);
@@ -994,7 +1049,7 @@ async function handleApi(req, res, url) {
   }
 
   if (method === 'GET' && p === '/api/comfy/assets') {
-    const settings = await getSettings();
+    const settings = await getSettings(PATHS);
     if (!settings.comfy.enabled) return json(res, 400, { error: 'Image generation disabled' });
     try {
       const assets = await comfy.listAssets(settings.comfy);
@@ -1010,7 +1065,7 @@ async function handleApi(req, res, url) {
     const file = path.join(PATHS.chats, `${chatId}.json`);
     const chat = await readJsonFile(file);
     if (!chat) return json(res, 404, { error: 'Chat not found' });
-    const settings = await getSettings();
+    const settings = await getSettings(PATHS);
     if (!settings.comfy?.enabled) return json(res, 400, { error: 'Image generation is disabled in Settings' });
 
     const body = await readJson(req, 1_000_000);
@@ -1172,7 +1227,7 @@ async function handleApi(req, res, url) {
         settings: result.settings || null,
         createdAt: new Date().toISOString(),
       };
-      await addGalleryItem(item);
+      await addGalleryItem(PATHS, item);
 
       // Replace the "Generating…" bubble with the final image message
       const latest = await readJsonFile(file);
@@ -1235,7 +1290,7 @@ async function handleApi(req, res, url) {
     const idea = String(body.idea || '').trim();
     if (!idea) return json(res, 400, { error: 'idea required' });
 
-    const settings = await getSettings();
+    const settings = await getSettings(PATHS);
     const provider = activeLlmProvider(settings);
     if (!provider?.baseUrl) {
       return json(res, 400, { error: 'Configure an LLM in Settings → Models first' });
@@ -1357,7 +1412,7 @@ async function handleApi(req, res, url) {
 
   if (method === 'POST' && p === '/api/comfy/generate') {
     if (!requireSameOrigin(req, res)) return;
-    const settings = await getSettings();
+    const settings = await getSettings(PATHS);
     if (!settings.comfy.enabled) return json(res, 400, { error: 'Image generation disabled in settings' });
     const body = await readJson(req, 1_000_000);
     const prompt = String(body.prompt || body.idea || '').trim();
@@ -1415,7 +1470,7 @@ async function handleApi(req, res, url) {
         settings: result.settings || null,
         createdAt: new Date().toISOString(),
       };
-      await addGalleryItem(item);
+      await addGalleryItem(PATHS, item);
 
       let chatMessage = null;
       if (body.chatId) {
@@ -1660,7 +1715,7 @@ async function handleApi(req, res, url) {
   if (method === 'POST' && p === '/api/chats') {
     if (!requireSameOrigin(req, res)) return;
     const body = await readJson(req);
-    const settings = await getSettings();
+    const settings = await getSettings(PATHS);
     const modeId = resolveModeId(body.modeId || settings.activeMode || 'chat');
     const mode = getMode(modeId);
     const characterId = body.characterId !== undefined
@@ -1913,14 +1968,14 @@ async function handleApi(req, res, url) {
         return json(res, 409, { error: 'Chat is already generating' });
       }
 
-      const folder = await loadChatFolder(chat);
+      const folder = await loadChatFolder(chat, PATHS);
       const character = chat.characterId
         ? await readJsonFile(path.join(PATHS.characters, `${chat.characterId}.json`))
         : null;
       const persona = chat.personaId
         ? await readJsonFile(path.join(PATHS.personas, `${chat.personaId}.json`))
         : null;
-      const settingsForPreset = await getSettings();
+      const settingsForPreset = await getSettings(PATHS);
       const presetId = pickInherit(chat.presetId, folder?.presetId, settingsForPreset.defaultPresetId);
       const preset = presetId
         ? await readJsonFile(path.join(PATHS.presets, `${presetId}.json`))
@@ -1949,6 +2004,7 @@ async function handleApi(req, res, url) {
         mode,
         folder,
         openPath: body.openPath || undefined,
+        paths: PATHS,
       });
 
       const controller = new AbortController();
@@ -1977,9 +2033,10 @@ async function handleApi(req, res, url) {
       const ownsStream = () => activeStreams.get(chatId) === controller;
 
       try {
-        const settingsForModel = await getSettings();
+        const settingsForModel = await getSettings(PATHS);
         const gen = resolveGenerationParams({ chat, folder, mode, settings: settingsForModel, body });
         const full = await streamChatCompletions({
+          settings: settingsForModel,
           messages,
           model: gen.model,
           temperature: gen.temperature,
@@ -2043,14 +2100,14 @@ async function handleApi(req, res, url) {
         chat.updatedAt = new Date().toISOString();
         await writeJsonFile(file, chat);
 
-        folder = await loadChatFolder(chat);
+        folder = await loadChatFolder(chat, PATHS);
         const character = chat.characterId
           ? await readJsonFile(path.join(PATHS.characters, `${chat.characterId}.json`))
           : null;
         const persona = chat.personaId
           ? await readJsonFile(path.join(PATHS.personas, `${chat.personaId}.json`))
           : null;
-        const settingsForPreset = await getSettings();
+        const settingsForPreset = await getSettings(PATHS);
         const presetId = pickInherit(chat.presetId, folder?.presetId, settingsForPreset.defaultPresetId);
         const preset = presetId
           ? await readJsonFile(path.join(PATHS.presets, `${presetId}.json`))
@@ -2065,6 +2122,7 @@ async function handleApi(req, res, url) {
           mode,
           folder,
           openPath: body.openPath || undefined,
+          paths: PATHS,
         });
       } catch (err) {
         if (activeStreams.get(chatId) === controller) activeStreams.delete(chatId);
@@ -2094,9 +2152,10 @@ async function handleApi(req, res, url) {
       const ownsStream = () => activeStreams.get(chatId) === controller;
 
       try {
-        const settingsForModel = await getSettings();
+        const settingsForModel = await getSettings(PATHS);
         const gen = resolveGenerationParams({ chat, folder, mode, settings: settingsForModel, body });
         const full = await streamChatCompletions({
+          settings: settingsForModel,
           messages,
           model: gen.model,
           temperature: gen.temperature,
@@ -2168,14 +2227,14 @@ async function handleApi(req, res, url) {
     if (method === 'POST' && action === 'prompt-preview') {
       if (!requireSameOrigin(req, res)) return;
       const body = await readJson(req);
-      const folder = await loadChatFolder(chat);
+      const folder = await loadChatFolder(chat, PATHS);
       const character = chat.characterId
         ? await readJsonFile(path.join(PATHS.characters, `${chat.characterId}.json`))
         : null;
       const persona = chat.personaId
         ? await readJsonFile(path.join(PATHS.personas, `${chat.personaId}.json`))
         : null;
-      const settingsForPreset = await getSettings();
+      const settingsForPreset = await getSettings(PATHS);
       const presetId = pickInherit(chat.presetId, folder?.presetId, settingsForPreset.defaultPresetId);
       const preset = presetId
         ? await readJsonFile(path.join(PATHS.presets, `${presetId}.json`))
@@ -2190,6 +2249,7 @@ async function handleApi(req, res, url) {
         folder,
         userMessage: body.content || '',
         openPath: body.openPath || undefined,
+        paths: PATHS,
       });
       return json(res, 200, {
         messages,
@@ -2209,7 +2269,7 @@ async function handleApi(req, res, url) {
 
   // Gallery + uploads
   if (method === 'GET' && p === '/api/gallery') {
-    return json(res, 200, await getGallery());
+    return json(res, 200, await getGallery(PATHS));
   }
 
   if (method === 'POST' && p === '/api/upload') {
@@ -2242,13 +2302,13 @@ async function handleApi(req, res, url) {
       url: `/api/media/${mediaId}`,
       createdAt: new Date().toISOString(),
     };
-    await addGalleryItem(item);
+    await addGalleryItem(PATHS, item);
     return json(res, 201, item);
   }
 
   if (method === 'GET' && p.startsWith('/api/media/')) {
     const mediaId = safeId(p.slice('/api/media/'.length).split('/')[0]);
-    const gallery = await getGallery();
+    const gallery = await getGallery(PATHS);
     const item = (gallery.items || []).find((i) => i.id === mediaId);
     if (!item) return json(res, 404, { error: 'Not found' });
     const filePath = path.join(PATHS.media, item.storedName);
@@ -2297,7 +2357,7 @@ const server = http.createServer(async (req, res) => {
 
     if (
       !isPublicAsset &&
-      !isAuthed(req) &&
+      !(await isAuthed(req)) &&
       (staticPath === '/' || staticPath.endsWith('.html'))
     ) {
       res.writeHead(302, { Location: '/login.html' });
@@ -2313,12 +2373,43 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
-server.listen(PORT, HOST, async () => {
-  const settings = await getSettings();
-  const provider = activeLlmProvider(settings);
-  console.log(`Personal WebUI listening on http://${HOST}:${PORT}`);
-  console.log(
-    `LLM: ${provider?.name || 'none'} · ${provider?.baseUrl || '—'} · model ${provider?.defaultModel || settings.defaultModel || '—'}`,
-  );
-  console.log(`API key: ${provider?.apiKey ? 'configured' : provider?.requiresKey === false ? 'not required' : 'MISSING'}`);
+async function boot() {
+  const migration = await users.migrateFromEnvIfNeeded(DATA_DIR, process.env, folders);
+  if (migration.migrated) {
+    console.log(`Migrated legacy data to multi-user admin "${migration.username}" (${migration.userId})`);
+  }
+  sessions.ensureStore(DATA_DIR);
+  await sessions.purgeExpired(DATA_DIR);
+  if (!(await users.hasAnyUsers(DATA_DIR))) {
+    await users.saveAppConfig(DATA_DIR, users.defaultAppConfig()).catch(() => {});
+  }
+
+  server.listen(PORT, HOST, async () => {
+    let settings = {
+      defaultModel: process.env.DEFAULT_MODEL || 'deepseek-v4-flash',
+      llm: llm.defaultProvidersFromEnv(),
+    };
+    try {
+      const list = await users.loadUsers(DATA_DIR);
+      const admin = list.find((u) => u.role === 'admin') || list[0];
+      if (admin) settings = await getSettings(ensureUserData(admin.id));
+    } catch {
+      /* env defaults */
+    }
+    const provider = activeLlmProvider(settings);
+    console.log(`Personal WebUI listening on http://${HOST}:${PORT}`);
+    console.log(
+      `LLM: ${provider?.name || 'none'} · ${provider?.baseUrl || '—'} · model ${provider?.defaultModel || settings.defaultModel || '—'}`,
+    );
+    console.log(
+      `API key: ${provider?.apiKey ? 'configured' : provider?.requiresKey === false ? 'not required' : 'MISSING'}`,
+    );
+    const needed = await setupRequired();
+    console.log(`Auth: ${needed ? 'setup required' : `${(await users.loadUsers(DATA_DIR)).length} user(s)`}`);
+  });
+}
+
+boot().catch((err) => {
+  console.error('Failed to start:', err);
+  process.exit(1);
 });

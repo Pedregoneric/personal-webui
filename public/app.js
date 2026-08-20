@@ -175,14 +175,38 @@ async function initLogin() {
   const status = await api('/api/setup-status');
   const setupForm = $('setup-form');
   const loginForm = $('login-form');
+  const signupForm = $('signup-form');
+  const signupEnabled = Boolean(status.signupEnabled);
+
+  if (status.brandTitle && $('auth-title') && !status.setupRequired) {
+    $('auth-title').textContent = status.brandTitle;
+  }
+  if (status.tipUrl && $('tip-link')) $('tip-link').href = status.tipUrl;
+
+  function showLogin() {
+    if (setupForm) setupForm.hidden = true;
+    if (loginForm) loginForm.hidden = false;
+    if (signupForm) signupForm.hidden = true;
+    if ($('signup-switch')) $('signup-switch').hidden = !signupEnabled;
+  }
+
+  function showSignup() {
+    if (setupForm) setupForm.hidden = true;
+    if (loginForm) loginForm.hidden = true;
+    if (signupForm) signupForm.hidden = false;
+  }
+
   if (status.setupRequired) {
-    setupForm.hidden = false;
-    loginForm.hidden = true;
+    if (setupForm) setupForm.hidden = false;
+    if (loginForm) loginForm.hidden = true;
+    if (signupForm) signupForm.hidden = true;
     if ($('auth-title')) $('auth-title').textContent = 'Create your login';
   } else {
-    setupForm.hidden = true;
-    loginForm.hidden = false;
+    showLogin();
   }
+
+  $('show-signup')?.addEventListener('click', showSignup);
+  $('show-login')?.addEventListener('click', showLogin);
 
   setupForm?.addEventListener('submit', async (e) => {
     e.preventDefault();
@@ -216,6 +240,28 @@ async function initLogin() {
         body: JSON.stringify({
           username: $('username').value.trim(),
           password: $('password').value,
+        }),
+      });
+      location.href = '/';
+    } catch (ex) {
+      err.textContent = ex.message;
+    }
+  });
+
+  signupForm?.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const err = $('signup-error');
+    err.textContent = '';
+    if ($('signup-password').value !== $('signup-confirm').value) {
+      err.textContent = 'Passwords do not match';
+      return;
+    }
+    try {
+      await api('/api/signup', {
+        method: 'POST',
+        body: JSON.stringify({
+          username: $('signup-username').value.trim(),
+          password: $('signup-password').value,
         }),
       });
       location.href = '/';

@@ -22,9 +22,11 @@ describe('personal-webui basics', () => {
 
   it('server source includes origin check and scrypt auth', () => {
     const src = fs.readFileSync(path.join(__dirname, '..', 'server.js'), 'utf8');
+    const usersSrc = fs.readFileSync(path.join(__dirname, '..', 'lib', 'users.js'), 'utf8');
     assert.match(src, /sameOrigin/);
-    assert.match(src, /scryptSync/);
     assert.match(src, /personal_webui_session/);
+    assert.match(usersSrc, /scryptSync/);
+    assert.match(src, /users\.verifyPassword|lib\/users/);
   });
 
   it('exposes Code mode and workspace routes', () => {
@@ -116,5 +118,120 @@ describe('folders id safety', () => {
     assert.throws(() => folders.assertFolderId(''), /invalid/i);
     assert.throws(() => folders.assertFolderId('bad id'), /invalid/i);
     assert.equal(folders.assertFolderId('folder-abc_01'), 'folder-abc_01');
+  });
+});
+
+const users = require('../lib/users');
+const sessions = require('../lib/sessions');
+
+describe('multi-user auth foundation', () => {
+  let tmp;
+
+  before(async () => {
+    tmp = await fsp.mkdtemp(path.join(os.tmpdir(), 'pwui-auth-'));
+  });
+
+  after(async () => {
+    await fsp.rm(tmp, { recursive: true, force: true });
+  });
+
+  it('isolates user data paths by userId', () => {
+    const a = users.userDataPaths(tmp, 'user-aaa');
+    const b = users.userDataPaths(tmp, 'user-bbb');
+    assert.notEqual(a.chats, b.chats);
+    assert.ok(a.chats.includes(`${path.sep}users${path.sep}user-aaa${path.sep}`));
+    assert.ok(b.settings.endsWith(`${path.sep}user-bbb${path.sep}settings.json`));
+    assert.throws(() => users.userDataPaths(tmp, '../evil'), /invalid/i);
+    assert.throws(() => users.userDataPaths(tmp, 'a/b'), /invalid/i);
+  });
+
+  it('defaults signupEnabled to false in app config', async () => {
+    const cfg = await users.loadAppConfig(tmp);
+    assert.equal(cfg.signupEnabled, false);
+    const saved = await users.saveAppConfig(tmp, { signupEnabled: true, brandTitle: 'Test' });
+    assert.equal(saved.signupEnabled, true);
+    assert.equal((await users.loadAppConfig(tmp)).brandTitle, 'Test');
+    await users.saveAppConfig(tmp, { signupEnabled: false });
+  });
+
+  it('hashes and verifies passwords with scrypt', () => {
+    const { salt, hash } = users.hashPassword('correct-horse-battery');
+    assert.equal(users.verifyPassword('correct-horse-battery', salt, hash), true);
+    assert.equal(users.verifyPassword('wrong-password!!', salt, hash), false);
+  });
+
+  it('creates users and durable sessions', async () => {
+    const admin = await users.createUser(tmp, {
+      username: 'admin1',
+      password: 'password-admin-1',
+      role: 'admin',
+    });
+    assert.equal(admin.role, 'admin');
+    assert.ok(admin.salt && admin.hash);
+    const member = await users.createUser(tmp, {
+      username: 'member1',
+      password: 'password-member-1',
+      role: 'user',
+    });
+    assert.equal(member.role, 'user');
+    const session = await sessions.createSession(tmp, member.id, 1);
+    const got = await sessions.getSession(tmp, session.token);
+    assert.equal(got.userId, member.id);
+    await sessions.destroySession(tmp, session.token);
+    assert.equal(await sessions.getSession(tmp, session.token), null);
+  });
+
+  it('server source gates admin routes and scopes user paths', () => {
+    const src = fs.readFileSync(path.join(__dirname, '..', 'server.js'), 'utf8');
+    assert.match(src, /requireAdmin/);
+    assert.match(src, /\/api\/admin\/users/);
+    assert.match(src, /\/api\/signup/);
+    assert.match(src, /signupEnabled/);
+    assert.match(src, /userDataPaths|ensureUserData/);
+    assert.match(src, /migrateFromEnvIfNeeded/);
+    assert.match(src, /role:\s*req\.user\.role|req\.user\.role/);
+    assert.match(src, /sessions\.createSession|createSession\(/);
+  });
+
+  it('migrates legacy flat data into per-user namespace idempotently', async () => {
+    const dataDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'pwui-mig-'));
+    try {
+      await fsp.mkdir(path.join(dataDir, 'chats'), { recursive: true });
+      await fsp.writeFile(path.join(dataDir, 'chats', 'chat-1.json'), JSON.stringify({ id: 'chat-1' }));
+      await fsp.writeFile(path.join(dataDir, 'settings.json'), JSON.stringify({ theme: 'dark' }));
+      await fsp.mkdir(path.join(dataDir, 'library', 'personas'), { recursive: true });
+      await fsp.writeFile(
+        path.join(dataDir, 'library', 'personas', 'persona-1.json'),
+        JSON.stringify({ id: 'persona-1' }),
+      );
+
+      const env = {
+        WEBUI_USERNAME: 'legacy-owner',
+        PASSWORD_SALT: 'a'.repeat(48),
+        PASSWORD_HASH: 'b'.repeat(128),
+      };
+      const first = await users.migrateFromEnvIfNeeded(dataDir, env, folders);
+      assert.equal(first.migrated, true);
+      assert.ok(first.userId);
+      assert.ok(fs.existsSync(path.join(dataDir, 'users.json')));
+      assert.ok(fs.existsSync(path.join(dataDir, 'sessions.json')));
+      assert.ok(fs.existsSync(path.join(dataDir, 'app.json')));
+      const paths = users.userDataPaths(dataDir, first.userId);
+      assert.ok(fs.existsSync(path.join(paths.chats, 'chat-1.json')));
+      assert.ok(fs.existsSync(paths.settings));
+      assert.equal(fs.existsSync(path.join(dataDir, 'chats')), false);
+      assert.equal(fs.existsSync(path.join(dataDir, 'settings.json')), false);
+
+      const second = await users.migrateFromEnvIfNeeded(dataDir, env, folders);
+      assert.equal(second.migrated, false);
+      assert.equal(second.reason, 'already-migrated');
+
+      const list = await users.loadUsers(dataDir);
+      assert.equal(list.length, 1);
+      assert.equal(list[0].role, 'admin');
+      assert.equal(list[0].username, 'legacy-owner');
+    } finally {
+      await fsp.rm(dataDir, { recursive: true, force: true });
+    }
   });
 });
