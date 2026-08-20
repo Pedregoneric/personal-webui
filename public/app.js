@@ -1175,17 +1175,35 @@ async function createFolder() {
   toast('Folder created');
 }
 
+const folderCollapseInflight = new Set();
+
 async function toggleFolderCollapsed(folderId) {
+  if (folderCollapseInflight.has(folderId)) return;
   const folder = folderById(folderId);
   if (!folder) return;
-  const next = await api(`/api/folders/${folderId}`, {
-    method: 'PATCH',
-    body: JSON.stringify({ collapsed: !folder.collapsed }),
-  });
-  const idx = state.folders.findIndex((f) => f.id === folderId);
-  if (idx >= 0) state.folders[idx] = next;
-  state.activeFolderId = folderId;
-  renderChatList();
+  folderCollapseInflight.add(folderId);
+  try {
+    const next = await api(`/api/folders/${folderId}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ collapsed: !folder.collapsed }),
+    });
+    const idx = state.folders.findIndex((f) => f.id === folderId);
+    if (idx >= 0) state.folders[idx] = next;
+    renderChatList();
+  } finally {
+    folderCollapseInflight.delete(folderId);
+  }
+}
+
+/** Persist model only when chat already overrides inherit, or user picks a non-inherited value. */
+function modelPatchForChat() {
+  const selected = $('model-select')?.value || '';
+  if (!selected) return {};
+  if (state.chat?.model) return { model: selected };
+  const folder = state.chat?.folderId ? folderById(state.chat.folderId) : null;
+  const inherited = folder?.model || state.settings?.defaultModel || '';
+  if (selected !== inherited) return { model: selected };
+  return {};
 }
 
 function openFolderSettings(folderId) {
@@ -1335,7 +1353,7 @@ async function sendImageRequest(idea) {
   if (!state.chat) await createChat();
   const mode = currentMode();
   await patchChat({
-    model: $('model-select')?.value,
+    ...modelPatchForChat(),
     characterId: mode.layout?.showCharacter ? $('character-select')?.value || null : state.chat.characterId,
     personaId: mode.layout?.showPersona ? $('persona-select')?.value || null : state.chat.personaId,
   });
@@ -1416,13 +1434,9 @@ async function regenerateMessage(messageId) {
 
   const chatId = state.chat.id;
   const mode = currentMode();
-  const selectedModel =
-    $('model-select')?.value ||
-    state.chat.model ||
-    state.settings?.defaultModel ||
-    '';
+  const modelPatch = modelPatchForChat();
   await patchChat({
-    ...(selectedModel ? { model: selectedModel } : {}),
+    ...modelPatch,
     characterId: mode.layout?.showCharacter ? $('character-select').value || null : state.chat.characterId,
     personaId: mode.layout?.showPersona ? $('persona-select').value || null : state.chat.personaId,
   });
@@ -1453,6 +1467,7 @@ async function regenerateMessage(messageId) {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         messageId,
+        ...(modelPatch.model ? { model: modelPatch.model } : {}),
         openPath: mode.layout?.showCodeStage ? state.workspace.openPath || undefined : undefined,
       }),
     });
@@ -1576,13 +1591,9 @@ async function sendMessage() {
     }
   }
 
-  const selectedModel =
-    $('model-select')?.value ||
-    state.chat.model ||
-    state.settings?.defaultModel ||
-    '';
+  const modelPatch = modelPatchForChat();
   await patchChat({
-    ...(selectedModel ? { model: selectedModel } : {}),
+    ...modelPatch,
     characterId: mode.layout?.showCharacter ? $('character-select').value || null : state.chat.characterId,
     personaId: mode.layout?.showPersona ? $('persona-select').value || null : state.chat.personaId,
   });
@@ -1609,6 +1620,7 @@ async function sendMessage() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         content,
+        ...(modelPatch.model ? { model: modelPatch.model } : {}),
         openPath: currentMode().layout?.showCodeStage ? state.workspace.openPath || undefined : undefined,
       }),
     });
@@ -2812,6 +2824,10 @@ async function initApp() {
       await api(`/api/folders/${id}`, { method: 'DELETE' });
       state.folders = state.folders.filter((f) => f.id !== id);
       if (state.activeFolderId === id) state.activeFolderId = null;
+      if (state.chat?.folderId === id) {
+        state.chat.folderId = null;
+        syncComposerSelects();
+      }
       await loadChats();
       closeModal('folder-modal');
       toast('Folder deleted');

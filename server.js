@@ -1679,13 +1679,12 @@ async function handleApi(req, res, url) {
       const folderExists = await folders.get(PATHS.folders, folderId);
       if (!folderExists) return json(res, 400, { error: 'Folder not found' });
     }
-    const folder = folderId ? await folders.get(PATHS.folders, folderId) : null;
     const inherit = Boolean(folderId);
     const presetId =
       body.presetId !== undefined
         ? body.presetId || null
         : inherit
-          ? folder?.presetId || settings.defaultPresetId || null
+          ? null
           : settings.defaultPresetId || null;
     const character = characterId ? await readJsonFile(path.join(PATHS.characters, `${characterId}.json`)) : null;
     const chat = {
@@ -1921,7 +1920,8 @@ async function handleApi(req, res, url) {
       const persona = chat.personaId
         ? await readJsonFile(path.join(PATHS.personas, `${chat.personaId}.json`))
         : null;
-      const presetId = pickInherit(chat.presetId, folder?.presetId);
+      const settingsForPreset = await getSettings();
+      const presetId = pickInherit(chat.presetId, folder?.presetId, settingsForPreset.defaultPresetId);
       const preset = presetId
         ? await readJsonFile(path.join(PATHS.presets, `${presetId}.json`))
         : null;
@@ -1979,9 +1979,6 @@ async function handleApi(req, res, url) {
       try {
         const settingsForModel = await getSettings();
         const gen = resolveGenerationParams({ chat, folder, mode, settings: settingsForModel, body });
-        if (!chat.model && gen.model) {
-          chat.model = gen.model;
-        }
         const full = await streamChatCompletions({
           messages,
           model: gen.model,
@@ -2053,7 +2050,8 @@ async function handleApi(req, res, url) {
         const persona = chat.personaId
           ? await readJsonFile(path.join(PATHS.personas, `${chat.personaId}.json`))
           : null;
-        const presetId = pickInherit(chat.presetId, folder?.presetId);
+        const settingsForPreset = await getSettings();
+        const presetId = pickInherit(chat.presetId, folder?.presetId, settingsForPreset.defaultPresetId);
         const preset = presetId
           ? await readJsonFile(path.join(PATHS.presets, `${presetId}.json`))
           : null;
@@ -2098,9 +2096,6 @@ async function handleApi(req, res, url) {
       try {
         const settingsForModel = await getSettings();
         const gen = resolveGenerationParams({ chat, folder, mode, settings: settingsForModel, body });
-        if (!chat.model && gen.model) {
-          chat.model = gen.model;
-        }
         const full = await streamChatCompletions({
           messages,
           model: gen.model,
@@ -2180,7 +2175,8 @@ async function handleApi(req, res, url) {
       const persona = chat.personaId
         ? await readJsonFile(path.join(PATHS.personas, `${chat.personaId}.json`))
         : null;
-      const presetId = pickInherit(chat.presetId, folder?.presetId);
+      const settingsForPreset = await getSettings();
+      const presetId = pickInherit(chat.presetId, folder?.presetId, settingsForPreset.defaultPresetId);
       const preset = presetId
         ? await readJsonFile(path.join(PATHS.presets, `${presetId}.json`))
         : null;
