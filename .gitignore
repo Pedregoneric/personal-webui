@@ -1,0 +1,10 @@
+.env
+data/chats/
+data/media/
+data/uploads/
+data/workspaces/
+data/settings.json
+node_modules/
+*.log
+.DS_Store
+lib/_selfcheck_zip_workspace.js

@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <title>Characters &amp; Personas · Personal WebUI</title>
+  <meta name="description" content="Create and edit AI characters and your user personas.">
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/app.css?v=10">
+  <script src="/viewport.js"></script>
+</head>
+<body class="library-page" data-theme="dark" data-accent="neutral">
+  <div class="toast-host" id="toast-host" aria-live="polite"></div>
+
+  <div class="lib-shell">
+    <header class="lib-topbar">
+      <a class="lib-back" href="/" title="Back to chat">← Chat</a>
+      <div class="lib-top-title">
+        <strong>Characters &amp; Personas</strong>
+        <span>AI roles and how the model sees you</span>
+      </div>
+      <div class="lib-top-actions">
+        <button type="button" class="btn-secondary sm" id="lib-duplicate" hidden>Duplicate</button>
+        <button type="button" class="btn-danger subtle sm" id="lib-delete" hidden>Delete</button>
+        <button type="button" class="btn-primary sm" id="lib-new">New</button>
+      </div>
+    </header>
+
+    <div class="lib-layout">
+      <aside class="lib-sidebar">
+        <div class="lib-tabs" role="tablist">
+          <button type="button" class="lib-tab active" data-kind="characters" role="tab" aria-selected="true">
+            AI characters
+            <em id="count-characters">0</em>
+          </button>
+          <button type="button" class="lib-tab" data-kind="personas" role="tab" aria-selected="false">
+            Your personas
+            <em id="count-personas">0</em>
+          </button>
+        </div>
+
+        <label class="lib-search">
+          <span class="sr-only">Search</span>
+          <input type="search" id="lib-search" placeholder="Search…" autocomplete="off">
+        </label>
+
+        <p class="lib-sidebar-hint" id="lib-hint">Characters define who the AI is.</p>
+        <nav class="lib-list" id="lib-list" aria-label="Library items"></nav>
+      </aside>
+
+      <main class="lib-main">
+        <section class="lib-empty" id="lib-empty">
+          <h1 id="lib-empty-title">Create your first character</h1>
+          <p id="lib-empty-copy">Give the AI a name, personality, and first message. Personas describe you.</p>
+          <button type="button" class="btn-primary" id="lib-empty-new">Create character</button>
+        </section>
+
+        <section class="lib-editor hidden" id="lib-editor-wrap">
+          <div class="lib-preview" id="lib-preview">
+            <div class="lib-preview-avatar" id="lib-preview-avatar">?</div>
+            <div>
+              <strong id="lib-preview-name">Untitled</strong>
+              <p id="lib-preview-blurb">Fill in the fields to preview.</p>
+            </div>
+          </div>
+
+          <form class="lib-form" id="lib-form">
+            <input type="hidden" id="lib-id">
+            <input type="hidden" id="lib-kind" value="characters">
+
+            <label class="full">Name
+              <input id="lib-name" type="text" maxlength="80" required placeholder="e.g. Iris, Coding Coach, Work Me">
+            </label>
+
+            <div id="lib-fields" class="lib-fields"></div>
+
+            <div class="lib-form-actions">
+              <button type="button" class="btn-secondary" id="lib-cancel">Cancel</button>
+              <button type="submit" class="btn-primary" id="lib-save">Save</button>
+            </div>
+          </form>
+        </section>
+      </main>
+    </div>
+  </div>
+
+  <script src="/characters.js?v=10"></script>
+</body>
+</html>

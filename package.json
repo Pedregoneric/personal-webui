@@ -1,0 +1,15 @@
+{
+  "name": "personal-webui",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Free self-hosted personal chat WebUI for local and OpenAI-compatible models (LM Studio, DeepSeek, Ollama)",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node server.js",
+    "check": "node --check server.js && node --check public/app.js && node --check lib/modes.js && node --check lib/zip.js && node --check lib/workspace.js",
+    "test": "node --test test/*.test.js"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

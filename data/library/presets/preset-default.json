@@ -1,0 +1,10 @@
+{
+  "id": "preset-default",
+  "name": "Default chat",
+  "systemPrompt": "",
+  "stylePrompt": "",
+  "temperature": 0.8,
+  "topP": 0.95,
+  "maxTokens": 4096,
+  "createdAt": "2026-08-16T04:04:24.556Z"
+}
