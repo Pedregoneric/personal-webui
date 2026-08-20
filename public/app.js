@@ -957,6 +957,8 @@ function renderConversation() {
             <div class="message-body">${simpleMarkdown(m.content || '')}</div>
             ${m.streaming ? '' : `<div class="message-actions">
               <button type="button" class="msg-action" data-copy-msg="${escapeHtml(m.id || '')}">Copy</button>
+              ${m.role === 'assistant' ? `<button type="button" class="msg-action" data-regen-msg="${escapeHtml(m.id || '')}"${state.generating || state.imageGenerating ? ' disabled' : ''}>Regenerate</button>
+              <button type="button" class="msg-action" data-branch-msg="${escapeHtml(m.id || '')}">Branch</button>` : ''}
             </div>`}
           </div>
         </div>
@@ -969,6 +971,18 @@ function renderConversation() {
       const id = btn.getAttribute('data-copy-msg');
       const msg = (state.chat?.messages || []).find((m) => m.id === id);
       if (msg?.content) copyText(msg.content);
+    });
+  });
+  convo.querySelectorAll('[data-regen-msg]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const id = btn.getAttribute('data-regen-msg');
+      if (id) regenerateMessage(id).catch((err) => toast(err.message || 'Regenerate failed'));
+    });
+  });
+  convo.querySelectorAll('[data-branch-msg]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const id = btn.getAttribute('data-branch-msg');
+      if (id) branchFromMessage(id).catch((err) => toast(err.message || 'Branch failed'));
     });
   });
   bindCodeBlockTools(convo);
@@ -1231,6 +1245,132 @@ async function sendImageRequest(idea) {
     state.imageGenerating = false;
     $('stop-gen')?.classList.add('hidden');
   }
+}
+
+async function regenerateMessage(messageId) {
+  if (!state.chat?.id || !messageId || state.generating || state.imageGenerating) return;
+  const idx = (state.chat.messages || []).findIndex((m) => m.id === messageId);
+  if (idx < 0) return;
+  const target = state.chat.messages[idx];
+  if (target.role !== 'assistant') return;
+
+  state.generating = true;
+  $('stop-gen')?.classList.remove('hidden');
+  setStatus('busy', 'Regenerating…');
+
+  const kept = state.chat.messages.slice(0, idx);
+  const tempAssistant = {
+    id: 'temp-assistant',
+    role: 'assistant',
+    content: '',
+    streaming: true,
+    createdAt: new Date().toISOString(),
+  };
+  state.chat.messages = [...kept, tempAssistant];
+  renderConversation();
+
+  let streamFailed = false;
+  try {
+    const res = await fetch(`/api/chats/${state.chat.id}/regenerate`, {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        messageId,
+        openPath: currentMode().layout?.showCodeStage ? state.workspace.openPath || undefined : undefined,
+      }),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.error || res.statusText);
+    }
+
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const chunks = buffer.split('\n\n');
+      buffer = chunks.pop() || '';
+      for (const chunk of chunks) {
+        let event = 'message';
+        let data = '';
+        for (const line of chunk.split('\n')) {
+          if (line.startsWith('event:')) event = line.slice(6).trim();
+          if (line.startsWith('data:')) data += line.slice(5).trim();
+        }
+        if (!data) continue;
+        let payload;
+        try {
+          payload = JSON.parse(data);
+        } catch {
+          continue;
+        }
+        if (event === 'truncated') {
+          state.chat.messages = Array.isArray(payload.messages) ? [...payload.messages, tempAssistant] : [tempAssistant];
+          if (payload.title) state.chat.title = payload.title;
+          renderConversation();
+        } else if (event === 'delta') {
+          tempAssistant.id = payload.id || tempAssistant.id;
+          tempAssistant.content = payload.content || '';
+          renderConversation();
+        } else if (event === 'done') {
+          state.chat.messages = state.chat.messages.filter((m) => m.id !== 'temp-assistant');
+          state.chat.messages.push(payload.message);
+          if (payload.title) state.chat.title = payload.title;
+        } else if (event === 'stopped' || event === 'error') {
+          state.chat.messages = state.chat.messages.filter((m) => m.id !== 'temp-assistant');
+          if (payload.message?.content) state.chat.messages.push(payload.message);
+          else if (event === 'error') {
+            streamFailed = true;
+            state.chat.messages.push({
+              id: 'err',
+              role: 'assistant',
+              content: `Error: ${payload.error || 'failed'}`,
+              createdAt: new Date().toISOString(),
+            });
+            toast(payload.error || 'Regenerate failed');
+          }
+          if (event === 'error') setStatus('err', 'Error');
+        }
+      }
+    }
+    await loadChats();
+    if (streamFailed) {
+      renderConversation();
+    } else {
+      await selectChat(state.chat.id);
+      setStatus('ok', 'Ready');
+    }
+  } catch (err) {
+    streamFailed = true;
+    state.chat.messages = kept.slice();
+    state.chat.messages.push({
+      id: 'err',
+      role: 'assistant',
+      content: `Error: ${err.message}`,
+      createdAt: new Date().toISOString(),
+    });
+    renderConversation();
+    setStatus('err', 'Error');
+    toast(err.message || 'Regenerate failed');
+  } finally {
+    state.generating = false;
+    $('stop-gen')?.classList.add('hidden');
+  }
+}
+
+async function branchFromMessage(messageId) {
+  if (!state.chat?.id || !messageId) return;
+  const branched = await api(`/api/chats/${state.chat.id}/branch`, {
+    method: 'POST',
+    body: JSON.stringify({ messageId }),
+  });
+  await loadChats();
+  await selectChat(branched.id);
+  toast('Branched chat');
 }
 
 async function sendMessage() {

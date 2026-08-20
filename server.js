@@ -1864,10 +1864,151 @@ async function handleApi(req, res, url) {
           message: assistantMsg.content ? assistantMsg : null,
         });
       } finally {
-        activeStreams.delete(chatId);
+        if (activeStreams.get(chatId) === controller) activeStreams.delete(chatId);
         res.end();
       }
       return;
+    }
+
+    if (method === 'POST' && action === 'regenerate') {
+      if (!requireSameOrigin(req, res)) return;
+      const body = await readJson(req, 1_000_000);
+      const messageId = String(body.messageId || '').trim();
+      if (!messageId) return json(res, 400, { error: 'messageId required' });
+
+      const idx = (chat.messages || []).findIndex((m) => m.id === messageId);
+      if (idx < 0) return json(res, 404, { error: 'Message not found' });
+      if (chat.messages[idx].role !== 'assistant') {
+        return json(res, 400, { error: 'Can only regenerate assistant messages' });
+      }
+
+      const existing = activeStreams.get(chatId);
+      if (existing) existing.abort();
+
+      chat.messages = chat.messages.slice(0, idx);
+      chat.updatedAt = new Date().toISOString();
+      await writeJsonFile(file, chat);
+
+      const character = chat.characterId
+        ? await readJsonFile(path.join(PATHS.characters, `${chat.characterId}.json`))
+        : null;
+      const persona = chat.personaId
+        ? await readJsonFile(path.join(PATHS.personas, `${chat.personaId}.json`))
+        : null;
+      const preset = chat.presetId
+        ? await readJsonFile(path.join(PATHS.presets, `${chat.presetId}.json`))
+        : null;
+      const mode = getMode(chat.modeId || 'chat');
+
+      const messages = await assembleMessages({
+        chat,
+        character,
+        persona,
+        preset,
+        mode,
+        openPath: body.openPath || undefined,
+      });
+
+      const controller = new AbortController();
+      activeStreams.set(chatId, controller);
+
+      res.writeHead(200, {
+        'Content-Type': 'text/event-stream; charset=utf-8',
+        'Cache-Control': 'no-cache, no-transform',
+        Connection: 'keep-alive',
+        'X-Accel-Buffering': 'no',
+      });
+
+      const sendEvent = (event, data) => {
+        res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+      };
+
+      sendEvent('truncated', { chatId, messages: chat.messages, title: chat.title });
+
+      const assistantMsg = {
+        id: id('msg'),
+        role: 'assistant',
+        content: '',
+        createdAt: new Date().toISOString(),
+      };
+
+      try {
+        const settingsForModel = await getSettings();
+        const activeProvider = activeLlmProvider(settingsForModel);
+        const resolvedModel =
+          body.model ||
+          chat.model ||
+          settingsForModel.defaultModel ||
+          activeProvider?.defaultModel ||
+          '';
+        if (!chat.model && resolvedModel) {
+          chat.model = resolvedModel;
+        }
+        const full = await streamChatCompletions({
+          messages,
+          model: resolvedModel,
+          temperature: body.temperature ?? chat.temperature,
+          topP: body.topP ?? chat.topP,
+          maxTokens: body.maxTokens ?? chat.maxTokens,
+          signal: controller.signal,
+          onDelta: (delta, fullText) => {
+            assistantMsg.content = fullText;
+            sendEvent('delta', { id: assistantMsg.id, delta, content: fullText });
+          },
+        });
+        assistantMsg.content = full || assistantMsg.content || '(empty response)';
+        chat.messages.push(assistantMsg);
+        chat.updatedAt = new Date().toISOString();
+        await writeJsonFile(file, chat);
+        sendEvent('done', { message: assistantMsg, chatId, title: chat.title });
+      } catch (err) {
+        if (assistantMsg.content) {
+          chat.messages.push(assistantMsg);
+          chat.updatedAt = new Date().toISOString();
+          await writeJsonFile(file, chat);
+        }
+        const aborted = String(err.message || '').includes('Aborted');
+        sendEvent(aborted ? 'stopped' : 'error', {
+          error: aborted ? 'Generation stopped' : err.message || 'Stream failed',
+          message: assistantMsg.content ? assistantMsg : null,
+        });
+      } finally {
+        if (activeStreams.get(chatId) === controller) activeStreams.delete(chatId);
+        res.end();
+      }
+      return;
+    }
+
+    if (method === 'POST' && action === 'branch') {
+      if (!requireSameOrigin(req, res)) return;
+      const body = await readJson(req);
+      const messageId = String(body.messageId || '').trim();
+      if (!messageId) return json(res, 400, { error: 'messageId required' });
+
+      const idx = (chat.messages || []).findIndex((m) => m.id === messageId);
+      if (idx < 0) return json(res, 404, { error: 'Message not found' });
+
+      const now = new Date().toISOString();
+      const branched = {
+        id: id('chat'),
+        title: `Branch of ${chat.title || 'chat'}`.slice(0, 120),
+        modeId: resolveModeId(chat.modeId || 'chat'),
+        characterId: chat.characterId ?? null,
+        personaId: chat.personaId ?? null,
+        presetId: chat.presetId ?? null,
+        model: chat.model || '',
+        temperature: chat.temperature,
+        topP: chat.topP,
+        maxTokens: chat.maxTokens,
+        pinned: false,
+        storyNotes: chat.storyNotes || '',
+        messages: (chat.messages || []).slice(0, idx + 1).map((m) => ({ ...m })),
+        createdAt: now,
+        updatedAt: now,
+      };
+      if (chat.folderId) branched.folderId = chat.folderId;
+      await writeJsonFile(path.join(PATHS.chats, `${branched.id}.json`), branched);
+      return json(res, 201, branched);
     }
 
     if (method === 'POST' && action === 'prompt-preview') {

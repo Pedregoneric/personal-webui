@@ -1071,6 +1071,10 @@ a.btn-secondary {
   background: var(--bg-hover);
   color: var(--text);
 }
+.msg-action:disabled {
+  opacity: 0.4;
+  pointer-events: none;
+}
 .message-body {
   line-height: 1.75;
   white-space: pre-wrap;
