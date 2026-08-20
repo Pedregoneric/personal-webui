@@ -28,7 +28,8 @@ function loadEnv(file) {
   }
 }
 
-loadEnv(path.join(PROJECT_ROOT, '.env'));
+const ENV_FILE = process.env.PERSONAL_WEBUI_ENV_FILE || path.join(PROJECT_ROOT, '.env');
+loadEnv(ENV_FILE);
 
 const HOST = process.env.HOST || '127.0.0.1';
 const PORT = Number(process.env.PORT || 4547);
@@ -40,6 +41,20 @@ fs.mkdirSync(DATA_DIR, { recursive: true });
 
 const loginAttempts = new Map();
 const activeStreams = new Map(); // `${userId}:${chatId}` -> AbortController
+let setupInProgress = false;
+
+function requestIsSecure(req) {
+  if (String(process.env.COOKIE_SECURE || '').toLowerCase() === 'true') return true;
+  return String(req.headers['x-forwarded-proto'] || '').split(',')[0].trim().toLowerCase() === 'https';
+}
+
+function applySecurityHeaders(res) {
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-Frame-Options', 'DENY');
+  res.setHeader('Referrer-Policy', 'no-referrer');
+  res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=(), payment=()');
+  res.setHeader('Cross-Origin-Resource-Policy', 'same-origin');
+}
 
 function userDataPaths(userId) {
   return users.userDataPaths(DATA_DIR, userId);
@@ -103,11 +118,12 @@ function parseCookies(req) {
   return out;
 }
 
-async function issueSession(res, userId) {
+async function issueSession(req, res, userId) {
   const session = await sessions.createSession(DATA_DIR, userId, SESSION_HOURS);
+  const secure = requestIsSecure(req) ? '; Secure' : '';
   res.setHeader(
     'Set-Cookie',
-    `personal_webui_session=${session.token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${session.maxAgeSec}`,
+    `personal_webui_session=${session.token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${session.maxAgeSec}${secure}`,
   );
   return session;
 }
@@ -724,18 +740,22 @@ async function handleApi(req, res, url) {
   if (method === 'POST' && p === '/api/setup') {
     if (!requireSameOrigin(req, res)) return;
     if (!(await setupRequired())) return json(res, 400, { error: 'Setup already complete' });
-    const body = await readJson(req);
-    const username = String(body.username || '').trim();
-    const password = String(body.password || '');
+    if (setupInProgress) return json(res, 409, { error: 'Setup already in progress' });
+    setupInProgress = true;
     try {
+      const body = await readJson(req);
+      const username = String(body.username || '').trim();
+      const password = String(body.password || '');
       const user = await users.createUser(DATA_DIR, { username, password, role: 'admin' });
       ensureUserData(user.id);
       sessions.ensureStore(DATA_DIR);
       await users.saveAppConfig(DATA_DIR, await users.loadAppConfig(DATA_DIR));
-      await issueSession(res, user.id);
+      await issueSession(req, res, user.id);
       return json(res, 200, { ok: true });
     } catch (err) {
       return json(res, err.status || 400, { error: err.message || 'Setup failed' });
+    } finally {
+      setupInProgress = false;
     }
   }
 
@@ -756,7 +776,7 @@ async function handleApi(req, res, url) {
     if (!active || !passwordOk) {
       return json(res, 401, { error: 'Invalid credentials' });
     }
-    await issueSession(res, user.id);
+    await issueSession(req, res, user.id);
     return json(res, 200, { ok: true });
   }
 
@@ -775,7 +795,7 @@ async function handleApi(req, res, url) {
         role: 'user',
       });
       ensureUserData(user.id);
-      await issueSession(res, user.id);
+      await issueSession(req, res, user.id);
       return json(res, 201, { ok: true, user: users.publicUser(user) });
     } catch (err) {
       return json(res, err.status || 400, { error: err.message || 'Signup failed' });
@@ -786,7 +806,8 @@ async function handleApi(req, res, url) {
     if (!requireSameOrigin(req, res)) return;
     const token = parseCookies(req).personal_webui_session;
     if (token) await sessions.destroySession(DATA_DIR, token);
-    res.setHeader('Set-Cookie', 'personal_webui_session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0');
+    const secure = requestIsSecure(req) ? '; Secure' : '';
+    res.setHeader('Set-Cookie', `personal_webui_session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0${secure}`);
     return json(res, 200, { ok: true });
   }
 
@@ -2391,6 +2412,7 @@ async function handleApi(req, res, url) {
 }
 
 const server = http.createServer(async (req, res) => {
+  applySecurityHeaders(res);
   try {
     const host = req.headers.host || `${HOST}:${PORT}`;
     const url = new URL(req.url || '/', `http://${host}`);
@@ -2453,6 +2475,18 @@ async function boot() {
     await users.saveAppConfig(DATA_DIR, users.defaultAppConfig()).catch(() => {});
   }
 
+  server.on('error', (err) => {
+    if (err.code === 'EADDRINUSE') {
+      console.error(`Cannot start Personal WebUI: ${HOST}:${PORT} is already in use.`);
+      console.error('Choose another PORT in .env, or stop the existing Personal WebUI process.');
+    } else if (err.code === 'EACCES') {
+      console.error(`Cannot start Personal WebUI: permission denied for ${HOST}:${PORT}.`);
+    } else {
+      console.error('Personal WebUI server error:', err.message || err);
+    }
+    process.exitCode = 1;
+  });
+
   server.listen(PORT, HOST, async () => {
     let settings = {
       defaultModel: process.env.DEFAULT_MODEL || 'deepseek-v4-flash',
@@ -2466,7 +2500,9 @@ async function boot() {
       /* env defaults */
     }
     const provider = activeLlmProvider(settings);
-    console.log(`Personal WebUI listening on http://${HOST}:${PORT}`);
+    const address = server.address();
+    const listeningPort = typeof address === 'object' && address ? address.port : PORT;
+    console.log(`Personal WebUI listening on http://${HOST}:${listeningPort}`);
     console.log(
       `LLM: ${provider?.name || 'none'} · ${provider?.baseUrl || '—'} · model ${provider?.defaultModel || settings.defaultModel || '—'}`,
     );

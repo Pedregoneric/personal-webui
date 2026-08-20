@@ -6,6 +6,15 @@ Free, self-hosted **personal chat** for local and OpenAI-compatible cloud models
 
 Sibling to [Grok WebUI](https://github.com/Pedregoneric/grok-webui) and [Codex WebUI](https://github.com/Pedregoneric/codex-webui) from Agent Media Tools — same privacy model, different job (personal chat + light Code mode, not shell agents).
 
+![Personal WebUI Companion mode](docs/screenshots/personal-webui-companion.png)
+
+<p align="center">
+  <a href="docs/screenshots/personal-webui-code.png">Code mode</a> ·
+  <a href="docs/screenshots/personal-webui-mobile.png">Mobile view</a> ·
+  <a href="https://agentmediatools.com/personal-webui">Product page</a> ·
+  <a href="https://agentmediatools.com/tip?from=personal-webui">Optional tip</a>
+</p>
+
 ## Features (v0.1)
 
 - Multi-chat history with **pin / delete** on the sidebar, plus search
@@ -71,6 +80,7 @@ Stay on Codex/Grok WebUI when you need the model to run commands. Use Personal *
 - Bind to Tailscale IP or localhost — not `0.0.0.0` on a public network
 - Username + scrypt-hashed password; API keys only in server `.env`
 - Sessions: random `HttpOnly`, `SameSite=Strict` cookies
+- Browser hardening headers on every response; session cookies become `Secure` automatically behind an HTTPS proxy
 - State-changing requests require same origin
 - Admin routes return **403** for non-admins; signup returns **403** when disabled
 
@@ -87,6 +97,17 @@ npm start
 ```
 
 Default port: **4547**.
+
+Useful deployment options:
+
+```env
+# Force Secure session cookies when TLS terminates somewhere that does not
+# forward X-Forwarded-Proto: https.
+COOKIE_SECURE=true
+
+# Optional alternate env file (useful for services, tests, or parallel installs).
+PERSONAL_WEBUI_ENV_FILE=/path/to/personal-webui.env
+```
 
 On boot the server runs an **idempotent migration**: if legacy flat `data/` chats/settings/library exist (or `.env` credentials are present and no users yet), they move into the admin user’s namespace under `data/users/{id}/`. Re-running start is safe — already-migrated installs are skipped.
 
