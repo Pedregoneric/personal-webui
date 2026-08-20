@@ -11,6 +11,7 @@ const { listModes, getMode, resolveModeId } = require('./lib/modes');
 const comfy = require('./lib/comfy');
 const llm = require('./lib/llm');
 const workspace = require('./lib/workspace');
+const folders = require('./lib/folders');
 
 const PROJECT_ROOT = __dirname;
 const PUBLIC_ROOT = path.join(PROJECT_ROOT, 'public');
@@ -45,6 +46,7 @@ const PATHS = {
   workspaces: path.join(DATA_DIR, 'workspaces'),
   settings: path.join(DATA_DIR, 'settings.json'),
   galleryIndex: path.join(DATA_DIR, 'gallery.json'),
+  folders: path.join(DATA_DIR, 'folders.json'),
 };
 
 for (const dir of [
@@ -58,6 +60,7 @@ for (const dir of [
 ]) {
   fs.mkdirSync(dir, { recursive: true });
 }
+folders.ensureStore(PATHS.folders);
 
 let authUsername = String(process.env.WEBUI_USERNAME || '').trim();
 let passwordSalt = process.env.PASSWORD_SALT || '';
@@ -391,9 +394,12 @@ function providerConfig(settings) {
   };
 }
 
-function buildSystemPrompt({ character, persona, preset, mode, storyNotes }) {
+function buildSystemPrompt({ character, persona, preset, mode, folder, storyNotes }) {
   const parts = [];
   if (mode?.defaults?.systemPrompt) parts.push(mode.defaults.systemPrompt.trim());
+  if (folder?.systemPrompt && String(folder.systemPrompt).trim()) {
+    parts.push(String(folder.systemPrompt).trim());
+  }
   if (preset?.systemPrompt) parts.push(preset.systemPrompt.trim());
   if (character?.systemPrompt) parts.push(character.systemPrompt.trim());
   if (character?.description || character?.personality || character?.scenario) {
@@ -419,6 +425,9 @@ function buildSystemPrompt({ character, persona, preset, mode, storyNotes }) {
     parts.push(p);
   }
   if (mode?.defaults?.stylePrompt) parts.push(`Style: ${mode.defaults.stylePrompt.trim()}`);
+  if (folder?.stylePrompt && String(folder.stylePrompt).trim()) {
+    parts.push(`Style: ${String(folder.stylePrompt).trim()}`);
+  }
   if (preset?.stylePrompt) parts.push(`Style: ${preset.stylePrompt.trim()}`);
   if (storyNotes && String(storyNotes).trim()) {
     parts.push(`Story / session notes:\n${String(storyNotes).trim()}`);
@@ -426,13 +435,68 @@ function buildSystemPrompt({ character, persona, preset, mode, storyNotes }) {
   return parts.filter(Boolean).join('\n\n');
 }
 
-async function assembleMessages({ chat, character, persona, preset, mode, userMessage, openPath }) {
+/** First non-null / non-empty value wins. */
+function pickInherit(...values) {
+  for (const v of values) {
+    if (v === undefined || v === null || v === '') continue;
+    return v;
+  }
+  return null;
+}
+
+function resolveGenerationParams({ chat, folder, mode, settings, body = {} }) {
+  const activeProvider = activeLlmProvider(settings);
+  const model = String(
+    pickInherit(
+      body.model,
+      chat?.model,
+      folder?.model,
+      settings?.defaultModel,
+      activeProvider?.defaultModel,
+      '',
+    ) || '',
+  );
+  const temperature = Number(
+    pickInherit(body.temperature, chat?.temperature, folder?.temperature, mode?.defaults?.temperature, 0.8),
+  );
+  const topP = Number(pickInherit(body.topP, chat?.topP, folder?.topP, mode?.defaults?.topP, 0.95));
+  const maxTokens = Number(
+    pickInherit(body.maxTokens, chat?.maxTokens, folder?.maxTokens, mode?.defaults?.maxTokens, 4096),
+  );
+  return { model, temperature, topP, maxTokens };
+}
+
+async function loadChatFolder(chat) {
+  if (!chat?.folderId) return null;
+  try {
+    return await folders.get(PATHS.folders, chat.folderId);
+  } catch {
+    return null;
+  }
+}
+
+function nullableSamplingNumber(value, fallback) {
+  if (value === null || value === '') return null;
+  if (value === undefined) return fallback;
+  const n = Number(value);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+function nullableSamplingString(value, fallback) {
+  if (value === null) return null;
+  if (value === undefined) return fallback;
+  const s = String(value).trim();
+  return s || null;
+}
+
+async function assembleMessages({ chat, character, persona, preset, mode, folder, userMessage, openPath }) {
   const messages = [];
   const system = buildSystemPrompt({
     character,
     persona,
     preset,
     mode,
+    folder,
     storyNotes: chat?.storyNotes,
   });
   if (system) messages.push({ role: 'system', content: system });
@@ -1539,6 +1603,36 @@ async function handleApi(req, res, url) {
     return json(res, 200, item);
   }
 
+  // Folders
+  if (method === 'GET' && p === '/api/folders') {
+    return json(res, 200, { items: await folders.list(PATHS.folders) });
+  }
+  if (method === 'POST' && p === '/api/folders') {
+    if (!requireSameOrigin(req, res)) return;
+    const body = await readJson(req);
+    const item = await folders.create(PATHS.folders, body);
+    return json(res, 201, item);
+  }
+  if ((method === 'PATCH' || method === 'PUT' || method === 'DELETE') && p.startsWith('/api/folders/')) {
+    if (!requireSameOrigin(req, res)) return;
+    const fid = folders.assertFolderId(p.slice('/api/folders/'.length).split('/')[0]);
+    if (method === 'DELETE') {
+      await folders.remove(PATHS.folders, fid);
+      const chats = await listJsonDir(PATHS.chats);
+      for (const chat of chats) {
+        if (chat && chat.folderId === fid) {
+          chat.folderId = null;
+          chat.updatedAt = new Date().toISOString();
+          await writeJsonFile(path.join(PATHS.chats, `${chat.id}.json`), chat);
+        }
+      }
+      return json(res, 200, { ok: true });
+    }
+    const body = await readJson(req);
+    const item = await folders.update(PATHS.folders, fid, body);
+    return json(res, 200, item);
+  }
+
   // Chats
   if (method === 'GET' && p === '/api/chats') {
     const items = await listJsonDir(PATHS.chats);
@@ -1549,6 +1643,7 @@ async function handleApi(req, res, url) {
       personaId: c.personaId,
       modeId: resolveModeId(c.modeId || 'chat'),
       model: c.model,
+      folderId: c.folderId || null,
       pinned: Boolean(c.pinned),
       updatedAt: c.updatedAt,
       createdAt: c.createdAt,
@@ -1578,7 +1673,20 @@ async function handleApi(req, res, url) {
       : mode.layout.showPersona
         ? settings.defaultPersonaId
         : null;
-    const presetId = body.presetId || settings.defaultPresetId;
+    let folderId = null;
+    if (body.folderId) {
+      folderId = folders.assertFolderId(body.folderId);
+      const folderExists = await folders.get(PATHS.folders, folderId);
+      if (!folderExists) return json(res, 400, { error: 'Folder not found' });
+    }
+    const folder = folderId ? await folders.get(PATHS.folders, folderId) : null;
+    const inherit = Boolean(folderId);
+    const presetId =
+      body.presetId !== undefined
+        ? body.presetId || null
+        : inherit
+          ? folder?.presetId || settings.defaultPresetId || null
+          : settings.defaultPresetId || null;
     const character = characterId ? await readJsonFile(path.join(PATHS.characters, `${characterId}.json`)) : null;
     const chat = {
       id: id('chat'),
@@ -1587,15 +1695,24 @@ async function handleApi(req, res, url) {
       characterId: characterId || null,
       personaId: personaId || null,
       presetId: presetId || null,
-      model: String(
-        body.model ||
-          settings.defaultModel ||
-          activeLlmProvider(settings)?.defaultModel ||
-          '',
-      ).trim(),
-      temperature: Number(body.temperature ?? mode.defaults.temperature ?? 0.8),
-      topP: Number(body.topP ?? mode.defaults.topP ?? 0.95),
-      maxTokens: Number(body.maxTokens ?? mode.defaults.maxTokens ?? 4096),
+      folderId,
+      model: inherit
+        ? nullableSamplingString(body.model, null)
+        : String(
+            body.model ||
+              settings.defaultModel ||
+              activeLlmProvider(settings)?.defaultModel ||
+              '',
+          ).trim(),
+      temperature: inherit
+        ? nullableSamplingNumber(body.temperature, null)
+        : Number(body.temperature ?? mode.defaults.temperature ?? 0.8),
+      topP: inherit
+        ? nullableSamplingNumber(body.topP, null)
+        : Number(body.topP ?? mode.defaults.topP ?? 0.95),
+      maxTokens: inherit
+        ? nullableSamplingNumber(body.maxTokens, null)
+        : Number(body.maxTokens ?? mode.defaults.maxTokens ?? 4096),
       pinned: false,
       storyNotes: String(body.storyNotes || ''),
       messages: [],
@@ -1634,6 +1751,16 @@ async function handleApi(req, res, url) {
     if (method === 'PATCH' && !action) {
       if (!requireSameOrigin(req, res)) return;
       const body = await readJson(req);
+      let nextFolderId = chat.folderId || null;
+      if (body.folderId !== undefined) {
+        if (body.folderId === null || body.folderId === '') {
+          nextFolderId = null;
+        } else {
+          nextFolderId = folders.assertFolderId(body.folderId);
+          const folderExists = await folders.get(PATHS.folders, nextFolderId);
+          if (!folderExists) return json(res, 400, { error: 'Folder not found' });
+        }
+      }
       const next = {
         ...chat,
         title: body.title !== undefined ? String(body.title).slice(0, 120) : chat.title,
@@ -1641,10 +1768,31 @@ async function handleApi(req, res, url) {
         characterId: body.characterId !== undefined ? body.characterId : chat.characterId,
         personaId: body.personaId !== undefined ? body.personaId : chat.personaId,
         presetId: body.presetId !== undefined ? body.presetId : chat.presetId,
-        model: body.model !== undefined ? String(body.model).slice(0, 120) : chat.model,
-        temperature: body.temperature !== undefined ? Number(body.temperature) : chat.temperature,
-        topP: body.topP !== undefined ? Number(body.topP) : chat.topP,
-        maxTokens: body.maxTokens !== undefined ? Number(body.maxTokens) : chat.maxTokens,
+        folderId: nextFolderId,
+        model:
+          body.model !== undefined
+            ? body.model === null || body.model === ''
+              ? null
+              : String(body.model).slice(0, 120)
+            : chat.model,
+        temperature:
+          body.temperature !== undefined
+            ? body.temperature === null || body.temperature === ''
+              ? null
+              : Number(body.temperature)
+            : chat.temperature,
+        topP:
+          body.topP !== undefined
+            ? body.topP === null || body.topP === ''
+              ? null
+              : Number(body.topP)
+            : chat.topP,
+        maxTokens:
+          body.maxTokens !== undefined
+            ? body.maxTokens === null || body.maxTokens === ''
+              ? null
+              : Number(body.maxTokens)
+            : chat.maxTokens,
         pinned: body.pinned !== undefined ? Boolean(body.pinned) : chat.pinned,
         storyNotes: body.storyNotes !== undefined ? String(body.storyNotes).slice(0, 20_000) : chat.storyNotes,
         messages: Array.isArray(body.messages) ? body.messages : chat.messages,
@@ -1766,14 +1914,16 @@ async function handleApi(req, res, url) {
         return json(res, 409, { error: 'Chat is already generating' });
       }
 
+      const folder = await loadChatFolder(chat);
       const character = chat.characterId
         ? await readJsonFile(path.join(PATHS.characters, `${chat.characterId}.json`))
         : null;
       const persona = chat.personaId
         ? await readJsonFile(path.join(PATHS.personas, `${chat.personaId}.json`))
         : null;
-      const preset = chat.presetId
-        ? await readJsonFile(path.join(PATHS.presets, `${chat.presetId}.json`))
+      const presetId = pickInherit(chat.presetId, folder?.presetId);
+      const preset = presetId
+        ? await readJsonFile(path.join(PATHS.presets, `${presetId}.json`))
         : null;
       const mode = getMode(chat.modeId || 'chat');
 
@@ -1797,6 +1947,7 @@ async function handleApi(req, res, url) {
         persona,
         preset,
         mode,
+        folder,
         openPath: body.openPath || undefined,
       });
 
@@ -1827,22 +1978,16 @@ async function handleApi(req, res, url) {
 
       try {
         const settingsForModel = await getSettings();
-        const activeProvider = activeLlmProvider(settingsForModel);
-        const resolvedModel =
-          body.model ||
-          chat.model ||
-          settingsForModel.defaultModel ||
-          activeProvider?.defaultModel ||
-          '';
-        if (!chat.model && resolvedModel) {
-          chat.model = resolvedModel;
+        const gen = resolveGenerationParams({ chat, folder, mode, settings: settingsForModel, body });
+        if (!chat.model && gen.model) {
+          chat.model = gen.model;
         }
         const full = await streamChatCompletions({
           messages,
-          model: resolvedModel,
-          temperature: body.temperature ?? chat.temperature,
-          topP: body.topP ?? chat.topP,
-          maxTokens: body.maxTokens ?? chat.maxTokens,
+          model: gen.model,
+          temperature: gen.temperature,
+          topP: gen.topP,
+          maxTokens: gen.maxTokens,
           signal: controller.signal,
           onDelta: (delta, fullText) => {
             assistantMsg.content = fullText;
@@ -1894,21 +2039,25 @@ async function handleApi(req, res, url) {
       if (existing) existing.abort();
 
       let messages;
+      let folder = null;
+      let mode = getMode(chat.modeId || 'chat');
       try {
         chat.messages = chat.messages.slice(0, idx);
         chat.updatedAt = new Date().toISOString();
         await writeJsonFile(file, chat);
 
+        folder = await loadChatFolder(chat);
         const character = chat.characterId
           ? await readJsonFile(path.join(PATHS.characters, `${chat.characterId}.json`))
           : null;
         const persona = chat.personaId
           ? await readJsonFile(path.join(PATHS.personas, `${chat.personaId}.json`))
           : null;
-        const preset = chat.presetId
-          ? await readJsonFile(path.join(PATHS.presets, `${chat.presetId}.json`))
+        const presetId = pickInherit(chat.presetId, folder?.presetId);
+        const preset = presetId
+          ? await readJsonFile(path.join(PATHS.presets, `${presetId}.json`))
           : null;
-        const mode = getMode(chat.modeId || 'chat');
+        mode = getMode(chat.modeId || 'chat');
 
         messages = await assembleMessages({
           chat,
@@ -1916,6 +2065,7 @@ async function handleApi(req, res, url) {
           persona,
           preset,
           mode,
+          folder,
           openPath: body.openPath || undefined,
         });
       } catch (err) {
@@ -1934,7 +2084,7 @@ async function handleApi(req, res, url) {
         res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
       };
 
-      sendEvent('truncated', { chatId, messages: chat.messages, title: chat.title });
+      sendEvent('truncate', { chatId, messages: chat.messages, title: chat.title });
 
       const assistantMsg = {
         id: id('msg'),
@@ -1947,22 +2097,16 @@ async function handleApi(req, res, url) {
 
       try {
         const settingsForModel = await getSettings();
-        const activeProvider = activeLlmProvider(settingsForModel);
-        const resolvedModel =
-          body.model ||
-          chat.model ||
-          settingsForModel.defaultModel ||
-          activeProvider?.defaultModel ||
-          '';
-        if (!chat.model && resolvedModel) {
-          chat.model = resolvedModel;
+        const gen = resolveGenerationParams({ chat, folder, mode, settings: settingsForModel, body });
+        if (!chat.model && gen.model) {
+          chat.model = gen.model;
         }
         const full = await streamChatCompletions({
           messages,
-          model: resolvedModel,
-          temperature: body.temperature ?? chat.temperature,
-          topP: body.topP ?? chat.topP,
-          maxTokens: body.maxTokens ?? chat.maxTokens,
+          model: gen.model,
+          temperature: gen.temperature,
+          topP: gen.topP,
+          maxTokens: gen.maxTokens,
           signal: controller.signal,
           onDelta: (delta, fullText) => {
             assistantMsg.content = fullText;
@@ -2029,14 +2173,16 @@ async function handleApi(req, res, url) {
     if (method === 'POST' && action === 'prompt-preview') {
       if (!requireSameOrigin(req, res)) return;
       const body = await readJson(req);
+      const folder = await loadChatFolder(chat);
       const character = chat.characterId
         ? await readJsonFile(path.join(PATHS.characters, `${chat.characterId}.json`))
         : null;
       const persona = chat.personaId
         ? await readJsonFile(path.join(PATHS.personas, `${chat.personaId}.json`))
         : null;
-      const preset = chat.presetId
-        ? await readJsonFile(path.join(PATHS.presets, `${chat.presetId}.json`))
+      const presetId = pickInherit(chat.presetId, folder?.presetId);
+      const preset = presetId
+        ? await readJsonFile(path.join(PATHS.presets, `${presetId}.json`))
         : null;
       const mode = getMode(chat.modeId || 'chat');
       const messages = await assembleMessages({
@@ -2045,13 +2191,22 @@ async function handleApi(req, res, url) {
         persona,
         preset,
         mode,
+        folder,
         userMessage: body.content || '',
         openPath: body.openPath || undefined,
       });
       return json(res, 200, {
         messages,
-        system: buildSystemPrompt({ character, persona, preset, mode, storyNotes: chat.storyNotes }),
+        system: buildSystemPrompt({
+          character,
+          persona,
+          preset,
+          mode,
+          folder,
+          storyNotes: chat.storyNotes,
+        }),
         modeId: mode.id,
+        folderId: chat.folderId || null,
       });
     }
   }

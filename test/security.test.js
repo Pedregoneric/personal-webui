@@ -9,6 +9,7 @@ const os = require('node:os');
 
 const zip = require('../lib/zip');
 const workspace = require('../lib/workspace');
+const folders = require('../lib/folders');
 
 describe('personal-webui basics', () => {
   it('ships server and public assets', () => {
@@ -104,5 +105,16 @@ describe('zip + workspace safety', () => {
       () => zip.unzip(tiny, { maxUncompressedBytes: 0 }),
       (err) => err && (err.code === 'ZIP_TOO_LARGE' || /large|budget|uncompress/i.test(err.message)),
     );
+  });
+});
+
+describe('folders id safety', () => {
+  it('rejects path escape and invalid folder ids', () => {
+    assert.throws(() => folders.assertFolderId('../evil'), /invalid/i);
+    assert.throws(() => folders.assertFolderId('a/b'), /invalid/i);
+    assert.throws(() => folders.assertFolderId('a\\b'), /invalid/i);
+    assert.throws(() => folders.assertFolderId(''), /invalid/i);
+    assert.throws(() => folders.assertFolderId('bad id'), /invalid/i);
+    assert.equal(folders.assertFolderId('folder-abc_01'), 'folder-abc_01');
   });
 });

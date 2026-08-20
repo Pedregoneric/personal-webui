@@ -4,6 +4,7 @@ data/media/
 data/uploads/
 data/workspaces/
 data/settings.json
+data/folders.json
 node_modules/
 *.log
 .DS_Store

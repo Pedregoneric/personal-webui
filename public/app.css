@@ -270,6 +270,109 @@ body[data-layout="code"] .empty-inner h1 { font-size: 1.25rem; }
   font-size: 0.75rem;
   font-weight: 500;
 }
+.thread-heading-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.15rem;
+}
+
+.folder-group {
+  margin: 0.35rem 0 0.5rem;
+}
+.folder-group.active-folder > .folder-header {
+  background: var(--bg-active);
+}
+.folder-header {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0.2rem 0.25rem 0.2rem 0.15rem;
+  border-radius: 0.55rem;
+}
+.folder-caret-btn {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.4rem;
+  height: 1.4rem;
+  border-radius: 0.4rem;
+  color: var(--text-3);
+}
+.folder-caret-btn:hover { background: var(--bg-hover); color: var(--text); }
+.folder-toggle {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.3rem 0.35rem;
+  border-radius: 0.45rem;
+  color: var(--text-2);
+  font-size: 0.75rem;
+  text-align: left;
+}
+.folder-toggle:hover { background: var(--bg-hover); color: var(--text); }
+.folder-caret {
+  width: 0.75rem;
+  flex-shrink: 0;
+  color: inherit;
+  font-size: 0.7rem;
+}
+.folder-swatch {
+  width: 0.55rem;
+  height: 0.55rem;
+  border-radius: 999px;
+  flex-shrink: 0;
+  background: var(--accent, #6366f1);
+}
+.folder-swatch.muted-swatch { background: var(--text-3); opacity: 0.45; }
+.folder-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+  color: var(--text);
+}
+.folder-count {
+  color: var(--text-3);
+  font-variant-numeric: tabular-nums;
+  font-weight: 500;
+}
+.folder-actions {
+  display: flex;
+  flex-shrink: 0;
+  opacity: 0.55;
+  transition: opacity 0.15s var(--ease);
+}
+.folder-header:hover .folder-actions,
+.folder-header:focus-within .folder-actions {
+  opacity: 1;
+}
+@media (hover: hover) and (pointer: fine) {
+  .folder-actions {
+    opacity: 0;
+    pointer-events: none;
+  }
+  .folder-header:hover .folder-actions,
+  .folder-header:focus-within .folder-actions {
+    opacity: 1;
+    pointer-events: auto;
+  }
+}
+.folder-chats {
+  padding-left: 0.35rem;
+}
+.folder-chats[hidden] { display: none !important; }
+.folder-empty {
+  padding: 0.35rem 0.6rem 0.5rem;
+}
+.folder-group.unfiled > .folder-header .folder-name {
+  font-weight: 500;
+  color: var(--text-3);
+}
 .thread-list {
   flex: 1;
   min-height: 0;

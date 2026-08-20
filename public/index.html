@@ -6,7 +6,7 @@
   <title>Personal WebUI</title>
   <meta name="description" content="Self-hosted personal chat for local and cloud models.">
   <link rel="icon" href="/favicon.svg" type="image/svg+xml">
-  <link rel="stylesheet" href="/app.css?v=15">
+  <link rel="stylesheet" href="/app.css?v=16">
   <script src="/viewport.js"></script>
 </head>
 <body data-theme="dark" data-accent="neutral" data-density="comfortable" data-chat-width="wide" data-mode="chat" data-layout="chat">
@@ -34,7 +34,10 @@
 
       <div class="thread-heading">
         <span id="thread-heading-label">Chats</span>
-        <button class="icon-btn quiet" id="refresh-chats" type="button" title="Refresh">↻</button>
+        <div class="thread-heading-actions">
+          <button class="icon-btn quiet" id="new-folder" type="button" title="New folder" aria-label="New folder">📁+</button>
+          <button class="icon-btn quiet" id="refresh-chats" type="button" title="Refresh">↻</button>
+        </div>
       </div>
       <nav class="thread-list" id="chat-list" aria-label="Conversations"></nav>
 
@@ -420,6 +423,7 @@
       </header>
       <div class="modal-body prefs-grid">
         <label class="full">Title <input id="chat-set-title" type="text" maxlength="120"></label>
+        <label class="full">Folder <select id="chat-set-folder"></select></label>
         <label>Temperature <input id="chat-set-temp" type="number" min="0" max="2" step="0.05"></label>
         <label>Top P <input id="chat-set-top-p" type="number" min="0" max="1" step="0.05"></label>
         <label>Max tokens <input id="chat-set-max-tokens" type="number" min="64" max="32000" step="64"></label>
@@ -433,6 +437,70 @@
         <div class="footer-spacer"></div>
         <button class="btn-secondary" data-close="chat-modal" type="button">Close</button>
         <button class="btn-primary" id="save-chat-settings" type="button">Save</button>
+      </footer>
+    </div>
+  </div>
+
+  <div class="modal hidden" id="folder-modal" role="dialog" aria-modal="true">
+    <div class="modal-card wide">
+      <header class="modal-header">
+        <div><p class="modal-kicker">Organize</p><h2>Folder settings</h2></div>
+        <button class="icon-btn" data-close="folder-modal" type="button" aria-label="Close">✕</button>
+      </header>
+      <div class="modal-body prefs-grid">
+        <input type="hidden" id="folder-set-id">
+        <label class="full">Name <input id="folder-set-name" type="text" maxlength="80" required></label>
+        <label class="full">Color
+          <select id="folder-set-color">
+            <option value="">Default</option>
+            <option value="#6366f1">Indigo</option>
+            <option value="#8b5cf6">Violet</option>
+            <option value="#ec4899">Pink</option>
+            <option value="#ef4444">Red</option>
+            <option value="#f59e0b">Amber</option>
+            <option value="#10b981">Emerald</option>
+            <option value="#06b6d4">Cyan</option>
+            <option value="#3b82f6">Blue</option>
+          </select>
+        </label>
+        <label class="full">System prompt
+          <textarea id="folder-set-system" rows="4" placeholder="Optional — appended after mode defaults for chats in this folder"></textarea>
+        </label>
+        <label class="full">Style prompt
+          <textarea id="folder-set-style" rows="2" placeholder="Optional style guidance"></textarea>
+        </label>
+        <label>Model <input id="folder-set-model" type="text" list="folder-model-list" placeholder="Inherit"></label>
+        <datalist id="folder-model-list"></datalist>
+        <label>Temperature <input id="folder-set-temp" type="number" min="0" max="2" step="0.05" placeholder="Inherit"></label>
+        <label>Top P <input id="folder-set-top-p" type="number" min="0" max="1" step="0.05" placeholder="Inherit"></label>
+        <label>Max tokens <input id="folder-set-max-tokens" type="number" min="64" max="32000" step="64" placeholder="Inherit"></label>
+        <label>Preset <select id="folder-set-preset"></select></label>
+        <p class="muted sm full">Empty model / sampling fields inherit from the chat when set, otherwise mode defaults.</p>
+      </div>
+      <footer class="modal-footer">
+        <button class="btn-danger subtle" id="delete-folder" type="button">Delete folder</button>
+        <div class="footer-spacer"></div>
+        <button class="btn-secondary" data-close="folder-modal" type="button">Close</button>
+        <button class="btn-primary" id="save-folder-settings" type="button">Save</button>
+      </footer>
+    </div>
+  </div>
+
+  <div class="modal hidden" id="move-folder-modal" role="dialog" aria-modal="true">
+    <div class="modal-card">
+      <header class="modal-header">
+        <div><p class="modal-kicker">Organize</p><h2>Move to folder</h2></div>
+        <button class="icon-btn" data-close="move-folder-modal" type="button" aria-label="Close">✕</button>
+      </header>
+      <div class="modal-body prefs-grid">
+        <input type="hidden" id="move-chat-id">
+        <label class="full">Folder
+          <select id="move-folder-select"></select>
+        </label>
+      </div>
+      <footer class="modal-footer">
+        <button class="btn-secondary" data-close="move-folder-modal" type="button">Cancel</button>
+        <button class="btn-primary" id="confirm-move-folder" type="button">Move</button>
       </footer>
     </div>
   </div>
@@ -512,6 +580,6 @@
   <!-- Hidden mode select for API parity / accessibility fallback -->
   <select id="mode-select" class="sr-only" aria-hidden="true" tabindex="-1"></select>
 
-  <script src="/app.js?v=17"></script>
+  <script src="/app.js?v=18"></script>
 </body>
 </html>

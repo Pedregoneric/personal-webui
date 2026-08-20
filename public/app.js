@@ -233,6 +233,8 @@ const state = {
   mode: null,
   chats: [],
   chat: null,
+  folders: [],
+  activeFolderId: null,
   characters: [],
   personas: [],
   presets: [],
@@ -811,6 +813,32 @@ function renderCharacterCard() {
     </div>`;
 }
 
+function folderById(id) {
+  return state.folders.find((f) => f.id === id) || null;
+}
+
+function renderThreadItem(c) {
+  const preview = (c.preview || '').replace(/\s+/g, ' ').replace(/!\[.*?\]\([^)]*\)/g, '🖼').trim();
+  const pinLabel = c.pinned ? 'Unpin' : 'Pin';
+  return `
+    <div class="thread-item${state.chat?.id === c.id ? ' active' : ''}" data-chat-id="${escapeHtml(c.id)}">
+      <button type="button" class="thread-item-main">
+        <strong>${c.pinned ? '● ' : ''}${escapeHtml(c.title || 'Untitled')}</strong>
+        <span>${escapeHtml(preview || 'No messages yet')}</span>
+        <div class="thread-meta-row">
+          <span class="thread-tag">${escapeHtml(getModeName(c.modeId))}</span>
+          ${c.characterId ? `<span class="thread-tag dim">${escapeHtml(characterName(c.characterId))}</span>` : ''}
+          <span class="thread-time">${escapeHtml(formatTime(c.updatedAt) || '')}</span>
+        </div>
+      </button>
+      <div class="thread-actions">
+        <button type="button" class="thread-action" data-thread-action="move" title="Move to folder" aria-label="Move to folder">Move</button>
+        <button type="button" class="thread-action" data-thread-action="pin" title="${pinLabel}" aria-label="${pinLabel}">${pinLabel}</button>
+        <button type="button" class="thread-action danger" data-thread-action="delete" title="Delete" aria-label="Delete">Delete</button>
+      </div>
+    </div>`;
+}
+
 function renderChatList() {
   const list = $('chat-list');
   if (!list) return;
@@ -823,32 +851,72 @@ function renderChatList() {
   if (q) {
     items = items.filter((c) => (c.title || '').toLowerCase().includes(q) || (c.preview || '').toLowerCase().includes(q));
   }
-  if (!items.length) {
+  if (!items.length && !state.folders.length) {
     list.innerHTML = `<p class="muted sm" style="padding:12px">No ${mode.name.toLowerCase()} chats yet</p>`;
     return;
   }
-  list.innerHTML = items
-    .map((c) => {
-      const preview = (c.preview || '').replace(/\s+/g, ' ').replace(/!\[.*?\]\([^)]*\)/g, '🖼').trim();
-      const pinLabel = c.pinned ? 'Unpin' : 'Pin';
-      return `
-    <div class="thread-item${state.chat?.id === c.id ? ' active' : ''}" data-chat-id="${escapeHtml(c.id)}">
-      <button type="button" class="thread-item-main">
-        <strong>${c.pinned ? '● ' : ''}${escapeHtml(c.title || 'Untitled')}</strong>
-        <span>${escapeHtml(preview || 'No messages yet')}</span>
-        <div class="thread-meta-row">
-          <span class="thread-tag">${escapeHtml(getModeName(c.modeId))}</span>
-          ${c.characterId ? `<span class="thread-tag dim">${escapeHtml(characterName(c.characterId))}</span>` : ''}
-          <span class="thread-time">${escapeHtml(formatTime(c.updatedAt) || '')}</span>
+
+  const folderIds = new Set(state.folders.map((f) => f.id));
+  const byFolder = new Map();
+  for (const f of state.folders) byFolder.set(f.id, []);
+  const unfiled = [];
+  for (const c of items) {
+    if (c.folderId && folderIds.has(c.folderId)) byFolder.get(c.folderId).push(c);
+    else unfiled.push(c);
+  }
+
+  const parts = [];
+  for (const folder of state.folders) {
+    const chats = byFolder.get(folder.id) || [];
+    if (q && !chats.length) continue;
+    const collapsed = Boolean(folder.collapsed);
+    const active = state.activeFolderId === folder.id;
+    const swatch = folder.color
+      ? `<span class="folder-swatch" style="background:${escapeHtml(folder.color)}"></span>`
+      : `<span class="folder-swatch muted-swatch"></span>`;
+    parts.push(`
+      <div class="folder-group${active ? ' active-folder' : ''}${collapsed ? ' collapsed' : ''}" data-folder-id="${escapeHtml(folder.id)}">
+        <div class="folder-header">
+          <button type="button" class="folder-caret-btn" data-folder-toggle="${escapeHtml(folder.id)}" aria-expanded="${collapsed ? 'false' : 'true'}" title="${collapsed ? 'Expand' : 'Collapse'}">
+            <span class="folder-caret">${collapsed ? '▸' : '▾'}</span>
+          </button>
+          <button type="button" class="folder-toggle" data-folder-activate="${escapeHtml(folder.id)}" title="New chats go here">
+            ${swatch}
+            <strong class="folder-name">${escapeHtml(folder.name || 'Folder')}</strong>
+            <span class="folder-count">${chats.length}</span>
+          </button>
+          <div class="folder-actions">
+            <button type="button" class="thread-action" data-folder-action="settings" data-folder-id="${escapeHtml(folder.id)}" title="Folder settings" aria-label="Folder settings">Edit</button>
+          </div>
         </div>
-      </button>
-      <div class="thread-actions">
-        <button type="button" class="thread-action" data-thread-action="pin" title="${pinLabel}" aria-label="${pinLabel}">${pinLabel}</button>
-        <button type="button" class="thread-action danger" data-thread-action="delete" title="Delete" aria-label="Delete">Delete</button>
-      </div>
-    </div>`;
-    })
-    .join('');
+        <div class="folder-chats"${collapsed ? ' hidden' : ''}>
+          ${chats.length ? chats.map(renderThreadItem).join('') : `<p class="muted sm folder-empty">Empty folder</p>`}
+        </div>
+      </div>`);
+  }
+
+  if (!q || unfiled.length) {
+    const unfiledActive = state.activeFolderId === null;
+    parts.push(`
+      <div class="folder-group unfiled${unfiledActive ? ' active-folder' : ''}" data-folder-id="">
+        <div class="folder-header">
+          <button type="button" class="folder-toggle" data-folder-activate-unfiled="1" title="Unfiled chats">
+            <span class="folder-caret">·</span>
+            <strong class="folder-name">Unfiled</strong>
+            <span class="folder-count">${unfiled.length}</span>
+          </button>
+        </div>
+        <div class="folder-chats">
+          ${unfiled.length ? unfiled.map(renderThreadItem).join('') : `<p class="muted sm folder-empty">No unfiled chats</p>`}
+        </div>
+      </div>`);
+  }
+
+  if (!parts.length) {
+    list.innerHTML = `<p class="muted sm" style="padding:12px">No ${mode.name.toLowerCase()} chats yet</p>`;
+    return;
+  }
+  list.innerHTML = parts.join('');
 }
 
 const threadActionInflight = new Set();
@@ -892,13 +960,14 @@ function legacyModeMatch(chatMode, activeMode) {
 }
 
 function syncComposerSelects() {
+  const folder = state.chat?.folderId ? folderById(state.chat.folderId) : null;
   fillSelect(
     $('model-select'),
     state.models.map((m) => ({ id: m, name: m })),
     'id',
     'name',
     null,
-    state.chat?.model || state.settings?.defaultModel,
+    state.chat?.model || folder?.model || state.settings?.defaultModel,
   );
   fillSelect(
     $('character-select'),
@@ -1063,10 +1132,95 @@ async function loadLibrary() {
   syncComposerSelects();
 }
 
+async function loadFolders() {
+  const data = await api('/api/folders');
+  state.folders = data.items || [];
+  if (state.activeFolderId && !state.folders.some((f) => f.id === state.activeFolderId)) {
+    state.activeFolderId = null;
+  }
+  renderChatList();
+}
+
 async function loadChats() {
   const data = await api('/api/chats');
   state.chats = data.items || [];
   renderChatList();
+}
+
+function fillFolderSelect(el, selected, { includeUnfiled = true } = {}) {
+  if (!el) return;
+  const opts = [];
+  if (includeUnfiled) opts.push(`<option value="">Unfiled</option>`);
+  for (const f of state.folders) {
+    opts.push(
+      `<option value="${escapeHtml(f.id)}"${String(f.id) === String(selected || '') ? ' selected' : ''}>${escapeHtml(f.name || 'Folder')}</option>`,
+    );
+  }
+  el.innerHTML = opts.join('');
+}
+
+async function createFolder() {
+  const name = prompt('Folder name', 'New folder');
+  if (name == null) return;
+  const trimmed = String(name).trim().slice(0, 80) || 'New folder';
+  const folder = await api('/api/folders', {
+    method: 'POST',
+    body: JSON.stringify({ name: trimmed }),
+  });
+  state.folders.push(folder);
+  state.folders.sort((a, b) => String(a.name || '').localeCompare(String(b.name || ''), undefined, { sensitivity: 'base' }));
+  state.activeFolderId = folder.id;
+  renderChatList();
+  openFolderSettings(folder.id);
+  toast('Folder created');
+}
+
+async function toggleFolderCollapsed(folderId) {
+  const folder = folderById(folderId);
+  if (!folder) return;
+  const next = await api(`/api/folders/${folderId}`, {
+    method: 'PATCH',
+    body: JSON.stringify({ collapsed: !folder.collapsed }),
+  });
+  const idx = state.folders.findIndex((f) => f.id === folderId);
+  if (idx >= 0) state.folders[idx] = next;
+  state.activeFolderId = folderId;
+  renderChatList();
+}
+
+function openFolderSettings(folderId) {
+  const folder = folderById(folderId);
+  if (!folder) return;
+  $('folder-set-id').value = folder.id;
+  $('folder-set-name').value = folder.name || '';
+  $('folder-set-color').value = folder.color || '';
+  $('folder-set-system').value = folder.systemPrompt || '';
+  $('folder-set-style').value = folder.stylePrompt || '';
+  $('folder-set-model').value = folder.model || '';
+  $('folder-set-temp').value = folder.temperature ?? '';
+  $('folder-set-top-p').value = folder.topP ?? '';
+  $('folder-set-max-tokens').value = folder.maxTokens ?? '';
+  fillSelect($('folder-set-preset'), state.presets, 'id', 'name', 'Inherit / none', folder.presetId);
+  const dl = $('folder-model-list');
+  if (dl) dl.innerHTML = state.models.map((m) => `<option value="${escapeHtml(m)}"></option>`).join('');
+  openModal('folder-modal');
+}
+
+function openMoveFolderModal(chatId) {
+  const summary = state.chats.find((c) => c.id === chatId);
+  $('move-chat-id').value = chatId;
+  fillFolderSelect($('move-folder-select'), summary?.folderId || null);
+  openModal('move-folder-modal');
+}
+
+async function moveChatToFolder(chatId, folderId) {
+  const next = await api(`/api/chats/${chatId}`, {
+    method: 'PATCH',
+    body: JSON.stringify({ folderId: folderId || null }),
+  });
+  if (state.chat?.id === chatId) state.chat = next;
+  await loadChats();
+  toast(folderId ? 'Moved to folder' : 'Moved to Unfiled');
 }
 
 async function loadGallery() {
@@ -1112,22 +1266,28 @@ async function createChat(seedPrompt) {
     state.settings?.defaultModel ||
     state.llm?.providers?.find((p) => p.id === state.llm?.activeProviderId)?.defaultModel ||
     '';
+  const folderId = state.activeFolderId || null;
+  const payload = {
+    characterId,
+    personaId,
+    modeId: mode.id,
+    folderId,
+  };
+  if (!folderId) {
+    payload.model = model || undefined;
+    payload.temperature = mode.defaults?.temperature;
+    payload.topP = mode.defaults?.topP;
+    payload.maxTokens = mode.defaults?.maxTokens;
+  }
   const chat = await api('/api/chats', {
     method: 'POST',
-    body: JSON.stringify({
-      characterId,
-      personaId,
-      model: model || undefined,
-      modeId: mode.id,
-      temperature: mode.defaults?.temperature,
-      topP: mode.defaults?.topP,
-      maxTokens: mode.defaults?.maxTokens,
-    }),
+    body: JSON.stringify(payload),
   });
   state.chat = chat;
   state.dismissedProposals = new Set();
   await loadChats();
   renderConversation();
+  syncComposerSelects();
   if (mode.layout?.showCodeStage) await loadWorkspace().catch(() => {});
   if (seedPrompt) {
     $('message').value = seedPrompt;
@@ -2026,6 +2186,7 @@ async function initApp() {
   await loadLlmPresets();
 
   await loadLibrary();
+  await loadFolders();
   await loadChats();
   await loadGallery();
   refreshComfyStatus();
@@ -2042,7 +2203,10 @@ async function initApp() {
 
   // Sidebar
   $('new-chat')?.addEventListener('click', () => createChat());
-  $('refresh-chats')?.addEventListener('click', () => loadChats());
+  $('new-folder')?.addEventListener('click', () => createFolder().catch((err) => toast(err.message || 'Create failed')));
+  $('refresh-chats')?.addEventListener('click', () => {
+    Promise.all([loadFolders(), loadChats()]).catch((err) => toast(err.message || 'Refresh failed'));
+  });
   $('chat-search')?.addEventListener('input', (e) => {
     state.search = e.target.value;
     renderChatList();
@@ -2062,7 +2226,39 @@ async function initApp() {
   $('close-sidebar')?.addEventListener('click', closeSidebar);
   $('sidebar-scrim')?.addEventListener('click', closeSidebar);
   $('chat-list')?.addEventListener('click', (e) => {
-    if (e.target.closest('.thread-actions')) {
+    const folderAction = e.target.closest('[data-folder-action]');
+    if (folderAction) {
+      e.preventDefault();
+      e.stopPropagation();
+      const fid = folderAction.dataset.folderId;
+      if (folderAction.dataset.folderAction === 'settings' && fid) openFolderSettings(fid);
+      return;
+    }
+    const toggle = e.target.closest('[data-folder-toggle]');
+    if (toggle) {
+      e.preventDefault();
+      e.stopPropagation();
+      const fid = toggle.getAttribute('data-folder-toggle');
+      if (fid) toggleFolderCollapsed(fid).catch((err) => toast(err.message || 'Folder update failed'));
+      return;
+    }
+    const activate = e.target.closest('[data-folder-activate]');
+    if (activate) {
+      e.preventDefault();
+      e.stopPropagation();
+      const fid = activate.getAttribute('data-folder-activate');
+      state.activeFolderId = fid || null;
+      renderChatList();
+      return;
+    }
+    if (e.target.closest('[data-folder-activate-unfiled]')) {
+      e.preventDefault();
+      e.stopPropagation();
+      state.activeFolderId = null;
+      renderChatList();
+      return;
+    }
+    if (e.target.closest('.thread-actions') || e.target.closest('.folder-actions')) {
       e.preventDefault();
       e.stopPropagation();
       const actionBtn = e.target.closest('[data-thread-action]');
@@ -2076,7 +2272,9 @@ async function initApp() {
           ? togglePinChat(id)
           : action === 'delete'
             ? deleteChatFromList(id)
-            : null;
+            : action === 'move'
+              ? Promise.resolve(openMoveFolderModal(id))
+              : null;
       run?.catch((err) => toast(err.message || 'Action failed'));
       return;
     }
@@ -2329,11 +2527,12 @@ async function initApp() {
   $('open-chat-settings')?.addEventListener('click', () => {
     if (!state.chat) return;
     $('chat-set-title').value = state.chat.title || '';
-    $('chat-set-temp').value = state.chat.temperature ?? currentMode().defaults?.temperature ?? 0.8;
-    $('chat-set-top-p').value = state.chat.topP ?? currentMode().defaults?.topP ?? 0.95;
-    $('chat-set-max-tokens').value = state.chat.maxTokens ?? currentMode().defaults?.maxTokens ?? 4096;
+    $('chat-set-temp').value = state.chat.temperature ?? '';
+    $('chat-set-top-p').value = state.chat.topP ?? '';
+    $('chat-set-max-tokens').value = state.chat.maxTokens ?? '';
     $('chat-set-notes').value = state.chat.storyNotes || '';
     fillSelect($('chat-set-preset'), state.presets, 'id', 'name', 'No preset', state.chat.presetId);
+    fillFolderSelect($('chat-set-folder'), state.chat.folderId || null);
     openModal('chat-modal');
   });
 
@@ -2554,15 +2753,82 @@ async function initApp() {
   $('pref-comfy-refresh-models')?.addEventListener('click', () => loadComfyModelOptions(true));
 
   $('save-chat-settings')?.addEventListener('click', async () => {
+    if (!state.chat) return;
+    const tempRaw = $('chat-set-temp').value;
+    const topPRaw = $('chat-set-top-p').value;
+    const maxRaw = $('chat-set-max-tokens').value;
     await patchChat({
       title: $('chat-set-title').value,
-      temperature: Number($('chat-set-temp').value),
-      topP: Number($('chat-set-top-p').value),
-      maxTokens: Number($('chat-set-max-tokens').value),
+      folderId: $('chat-set-folder').value || null,
+      temperature: tempRaw === '' ? null : Number(tempRaw),
+      topP: topPRaw === '' ? null : Number(topPRaw),
+      maxTokens: maxRaw === '' ? null : Number(maxRaw),
       presetId: $('chat-set-preset').value || null,
       storyNotes: $('chat-set-notes').value,
     });
     closeModal('chat-modal');
+  });
+
+  $('save-folder-settings')?.addEventListener('click', async () => {
+    const id = $('folder-set-id')?.value;
+    if (!id) return;
+    const tempRaw = $('folder-set-temp').value;
+    const topPRaw = $('folder-set-top-p').value;
+    const maxRaw = $('folder-set-max-tokens').value;
+    try {
+      const next = await api(`/api/folders/${id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({
+          name: $('folder-set-name').value,
+          color: $('folder-set-color').value || null,
+          systemPrompt: $('folder-set-system').value,
+          stylePrompt: $('folder-set-style').value,
+          model: $('folder-set-model').value || null,
+          temperature: tempRaw === '' ? null : Number(tempRaw),
+          topP: topPRaw === '' ? null : Number(topPRaw),
+          maxTokens: maxRaw === '' ? null : Number(maxRaw),
+          presetId: $('folder-set-preset').value || null,
+        }),
+      });
+      const idx = state.folders.findIndex((f) => f.id === id);
+      if (idx >= 0) state.folders[idx] = next;
+      else state.folders.push(next);
+      state.folders.sort((a, b) =>
+        String(a.name || '').localeCompare(String(b.name || ''), undefined, { sensitivity: 'base' }),
+      );
+      renderChatList();
+      closeModal('folder-modal');
+      toast('Folder saved');
+    } catch (err) {
+      toast(err.message || 'Save failed');
+    }
+  });
+
+  $('delete-folder')?.addEventListener('click', async () => {
+    const id = $('folder-set-id')?.value;
+    if (!id) return;
+    if (!confirm('Delete this folder? Chats will be moved to Unfiled.')) return;
+    try {
+      await api(`/api/folders/${id}`, { method: 'DELETE' });
+      state.folders = state.folders.filter((f) => f.id !== id);
+      if (state.activeFolderId === id) state.activeFolderId = null;
+      await loadChats();
+      closeModal('folder-modal');
+      toast('Folder deleted');
+    } catch (err) {
+      toast(err.message || 'Delete failed');
+    }
+  });
+
+  $('confirm-move-folder')?.addEventListener('click', async () => {
+    const chatId = $('move-chat-id')?.value;
+    if (!chatId) return;
+    try {
+      await moveChatToFolder(chatId, $('move-folder-select').value || null);
+      closeModal('move-folder-modal');
+    } catch (err) {
+      toast(err.message || 'Move failed');
+    }
   });
 
   $('delete-chat')?.addEventListener('click', async () => {
