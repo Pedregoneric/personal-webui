@@ -2223,6 +2223,11 @@ async function initApp() {
     return;
   }
 
+  if (state.me?.role === 'admin') {
+    $('open-admin')?.classList.remove('hidden');
+    $('open-admin-footer')?.classList.remove('hidden');
+  }
+
   const [settings, modesPayload] = await Promise.all([api('/api/settings'), api('/api/modes')]);
   state.modes = modesPayload.items || [];
   state.mode = state.modes.find((m) => m.id === (settings.activeMode || modesPayload.activeMode)) || state.modes[0];

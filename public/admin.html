@@ -1,0 +1,125 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <title>Admin · Personal WebUI</title>
+  <meta name="description" content="Manage users and app settings.">
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/app.css?v=18">
+  <script src="/viewport.js"></script>
+</head>
+<body class="admin-page" data-theme="dark" data-accent="neutral">
+  <div class="toast-host" id="toast-host" aria-live="polite"></div>
+
+  <div class="admin-shell">
+    <header class="lib-topbar">
+      <a class="lib-back" href="/" title="Back to chat">← Chat</a>
+      <div class="lib-top-title">
+        <strong>Admin</strong>
+        <span>Users, signup, and appearance</span>
+      </div>
+    </header>
+
+    <main class="admin-main">
+      <section class="admin-card" id="users-section" aria-labelledby="users-heading">
+        <div class="admin-card-head">
+          <div>
+            <h2 id="users-heading">Users</h2>
+            <p class="muted sm">Create accounts, change roles, disable, or reset passwords.</p>
+          </div>
+          <button type="button" class="btn-primary sm" id="user-create-toggle">Create user</button>
+        </div>
+
+        <form class="admin-create-form hidden" id="user-create-form">
+          <label>Username
+            <input id="create-username" type="text" maxlength="64" autocomplete="off" autocapitalize="none" spellcheck="false" required>
+          </label>
+          <label>Password
+            <input id="create-password" type="password" minlength="12" maxlength="200" autocomplete="new-password" required>
+          </label>
+          <label>Role
+            <select id="create-role">
+              <option value="user">user</option>
+              <option value="admin">admin</option>
+            </select>
+          </label>
+          <div class="admin-form-actions">
+            <button type="button" class="btn-secondary sm" id="user-create-cancel">Cancel</button>
+            <button type="submit" class="btn-primary sm">Create</button>
+          </div>
+          <p class="muted sm">Password must be at least 12 characters.</p>
+        </form>
+
+        <div class="admin-table-wrap">
+          <table class="admin-table" id="users-table">
+            <thead>
+              <tr>
+                <th>Username</th>
+                <th>Role</th>
+                <th>Status</th>
+                <th>Created</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody id="users-tbody">
+              <tr><td colspan="5" class="muted sm">Loading…</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="admin-card" id="signup-section" aria-labelledby="signup-heading">
+        <div class="admin-card-head">
+          <div>
+            <h2 id="signup-heading">Signup</h2>
+            <p class="muted sm">When enabled, visitors can create accounts from the login page.</p>
+          </div>
+        </div>
+        <label class="admin-check">
+          <input type="checkbox" id="signup-enabled">
+          <span>Allow open signup</span>
+        </label>
+        <p id="signup-status" class="muted sm" aria-live="polite"></p>
+      </section>
+
+      <section class="admin-card" id="appearance-section" aria-labelledby="appearance-heading">
+        <div class="admin-card-head">
+          <div>
+            <h2 id="appearance-heading">Appearance</h2>
+            <p class="muted sm">Global brand shown on the login page. Tip link is optional.</p>
+          </div>
+        </div>
+        <form class="admin-prefs-form" id="appearance-form">
+          <label>Brand title
+            <input id="brand-title" type="text" maxlength="80" placeholder="Personal WebUI">
+          </label>
+          <label>Tip URL
+            <input id="tip-url" type="url" maxlength="500" placeholder="https://…">
+          </label>
+          <div class="admin-form-actions">
+            <button type="submit" class="btn-primary sm">Save appearance</button>
+          </div>
+        </form>
+        <p class="muted sm admin-note">LLM and ComfyUI defaults stay in each user’s Settings — they are not global app config.</p>
+      </section>
+    </main>
+  </div>
+
+  <dialog class="admin-dialog" id="reset-dialog">
+    <form id="reset-form" class="admin-dialog-body">
+      <h3>Reset password</h3>
+      <p class="muted sm" id="reset-user-label"></p>
+      <label>New password
+        <input id="reset-password" type="password" minlength="12" maxlength="200" autocomplete="new-password" required>
+      </label>
+      <div class="admin-form-actions">
+        <button type="button" class="btn-secondary sm" id="reset-cancel">Cancel</button>
+        <button type="submit" class="btn-primary sm">Reset</button>
+      </div>
+    </form>
+  </dialog>
+
+  <script src="/admin.js?v=1"></script>
+</body>
+</html>

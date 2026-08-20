@@ -6,7 +6,7 @@
   <title>Personal WebUI</title>
   <meta name="description" content="Self-hosted personal chat for local and cloud models.">
   <link rel="icon" href="/favicon.svg" type="image/svg+xml">
-  <link rel="stylesheet" href="/app.css?v=16">
+  <link rel="stylesheet" href="/app.css?v=18">
   <script src="/viewport.js"></script>
 </head>
 <body data-theme="dark" data-accent="neutral" data-density="comfortable" data-chat-width="wide" data-mode="chat" data-layout="chat">
@@ -43,10 +43,12 @@
 
       <div class="sidebar-bottom">
         <a class="rail-link" id="open-library" href="/characters">Characters</a>
+        <a class="rail-link hidden" id="open-admin" href="/admin">Admin</a>
         <button class="rail-link" id="open-gallery" type="button">Gallery</button>
         <button class="rail-link" id="open-prefs" type="button">Settings</button>
         <div class="sidebar-meta">
           <span class="status-dot" id="connection"><i></i><em id="connection-label">Ready</em></span>
+          <a class="text-link hidden" id="open-admin-footer" href="/admin">Admin</a>
           <button class="text-link" id="open-tip" type="button">Tip</button>
           <button class="text-link" id="logout" type="button">Log out</button>
         </div>
@@ -580,6 +582,6 @@
   <!-- Hidden mode select for API parity / accessibility fallback -->
   <select id="mode-select" class="sr-only" aria-hidden="true" tabindex="-1"></select>
 
-  <script src="/app.js?v=19"></script>
+  <script src="/app.js?v=20"></script>
 </body>
 </html>

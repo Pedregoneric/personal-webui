@@ -18,6 +18,8 @@ describe('personal-webui basics', () => {
     assert.ok(fs.existsSync(path.join(root, 'public', 'index.html')));
     assert.ok(fs.existsSync(path.join(root, 'public', 'app.js')));
     assert.ok(fs.existsSync(path.join(root, 'public', 'login.html')));
+    assert.ok(fs.existsSync(path.join(root, 'public', 'admin.html')));
+    assert.ok(fs.existsSync(path.join(root, 'public', 'admin.js')));
   });
 
   it('server source includes origin check and scrypt auth', () => {
@@ -183,10 +185,13 @@ describe('multi-user auth foundation', () => {
 
   it('server source gates admin routes and scopes user paths', () => {
     const src = fs.readFileSync(path.join(__dirname, '..', 'server.js'), 'utf8');
+    const usersSrc = fs.readFileSync(path.join(__dirname, '..', 'lib/users.js'), 'utf8');
     assert.match(src, /requireAdmin/);
     assert.match(src, /\/api\/admin\/users/);
+    assert.match(src, /\/api\/admin\/app/);
     assert.match(src, /\/api\/signup/);
     assert.match(src, /signupEnabled/);
+    assert.match(usersSrc, /Cannot remove the last admin/);
     assert.match(src, /userDataPaths|ensureUserData/);
     assert.match(src, /migrateFromEnvIfNeeded/);
     assert.match(src, /role:\s*req\.user\.role|req\.user\.role/);
@@ -194,6 +199,31 @@ describe('multi-user auth foundation', () => {
     assert.match(src, /optionalSafeId|loadLibraryJson/);
     assert.match(src, /streamKey\(|userId\}:\$\{chatId|`\$\{userId\}:\$\{chatId\}`/);
     assert.match(src, /DUMMY_LOGIN_SALT/);
+  });
+
+  it('refuses demoting the last admin', async () => {
+    const isolated = await fsp.mkdtemp(path.join(os.tmpdir(), 'pwui-last-admin-'));
+    try {
+      const only = await users.createUser(isolated, {
+        username: 'solo-admin',
+        password: 'password-solo-admin',
+        role: 'admin',
+      });
+      await assert.rejects(
+        () => users.setRole(isolated, only.id, 'user'),
+        (err) => err && /last admin/i.test(err.message) && err.status === 400
+      );
+      const second = await users.createUser(isolated, {
+        username: 'second-admin',
+        password: 'password-second-admin',
+        role: 'admin',
+      });
+      const demoted = await users.setRole(isolated, only.id, 'user');
+      assert.equal(demoted.role, 'user');
+      assert.equal((await users.findById(isolated, second.id)).role, 'admin');
+    } finally {
+      await fsp.rm(isolated, { recursive: true, force: true });
+    }
   });
 
   it('login always uses dummy scrypt credentials for missing users', () => {

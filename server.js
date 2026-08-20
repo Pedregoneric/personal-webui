@@ -862,12 +862,38 @@ async function handleApi(req, res, url) {
       if (body.role !== undefined) {
         updated = await users.setRole(DATA_DIR, userId, body.role);
       }
+      if (body.password !== undefined) {
+        updated = await users.resetPassword(DATA_DIR, userId, body.password);
+        await sessions.destroySessionsForUser(DATA_DIR, userId);
+      }
       if (!updated) {
         const existing = await users.findById(DATA_DIR, userId);
         if (!existing) return json(res, 404, { error: 'User not found' });
         updated = users.publicUser(existing);
       }
       return json(res, 200, updated);
+    } catch (err) {
+      return json(res, err.status || 400, { error: err.message || 'Update failed' });
+    }
+  }
+
+  if (method === 'GET' && p === '/api/admin/app') {
+    if (!(await requireAdmin(req, res))) return;
+    return json(res, 200, await users.loadAppConfig(DATA_DIR));
+  }
+
+  if (method === 'PATCH' && p === '/api/admin/app') {
+    if (!(await requireAdmin(req, res))) return;
+    if (!requireSameOrigin(req, res)) return;
+    const body = await readJson(req);
+    const current = await users.loadAppConfig(DATA_DIR);
+    const next = { ...current };
+    if (body.signupEnabled !== undefined) next.signupEnabled = Boolean(body.signupEnabled);
+    if (body.brandTitle !== undefined) next.brandTitle = body.brandTitle;
+    if (body.tipUrl !== undefined) next.tipUrl = body.tipUrl;
+    try {
+      const saved = await users.saveAppConfig(DATA_DIR, next);
+      return json(res, 200, saved);
     } catch (err) {
       return json(res, err.status || 400, { error: err.message || 'Update failed' });
     }
@@ -2387,10 +2413,13 @@ const server = http.createServer(async (req, res) => {
       url.pathname === '/viewport.js' ||
       url.pathname === '/favicon.svg';
 
-    // Friendly route for the characters/personas page
+    // Friendly routes for secondary HTML pages
     let staticPath = url.pathname;
     if (staticPath === '/characters' || staticPath === '/personas' || staticPath === '/library') {
       staticPath = '/characters.html';
+    }
+    if (staticPath === '/admin') {
+      staticPath = '/admin.html';
     }
 
     if (

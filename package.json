@@ -6,7 +6,7 @@
   "type": "commonjs",
   "scripts": {
     "start": "node server.js",
-    "check": "node --check server.js && node --check public/app.js && node --check lib/modes.js && node --check lib/zip.js && node --check lib/workspace.js && node --check lib/folders.js && node --check lib/users.js && node --check lib/sessions.js",
+    "check": "node --check server.js && node --check public/app.js && node --check public/admin.js && node --check lib/modes.js && node --check lib/zip.js && node --check lib/workspace.js && node --check lib/folders.js && node --check lib/users.js && node --check lib/sessions.js",
     "test": "node --test test/*.test.js"
   },
   "engines": {
