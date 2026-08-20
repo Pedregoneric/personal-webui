@@ -181,7 +181,14 @@ async function initLogin() {
   if (status.brandTitle && $('auth-title') && !status.setupRequired) {
     $('auth-title').textContent = status.brandTitle;
   }
-  if (status.tipUrl && $('tip-link')) $('tip-link').href = status.tipUrl;
+  if (status.tipUrl && $('tip-link')) {
+    try {
+      const tip = new URL(String(status.tipUrl));
+      if (tip.protocol === 'http:' || tip.protocol === 'https:') $('tip-link').href = tip.toString();
+    } catch {
+      /* keep default href */
+    }
+  }
 
   function showLogin() {
     if (setupForm) setupForm.hidden = true;

@@ -201,7 +201,7 @@ describe('multi-user auth foundation', () => {
     assert.match(src, /DUMMY_LOGIN_SALT/);
   });
 
-  it('refuses demoting the last admin', async () => {
+  it('refuses demoting or disabling the last admin', async () => {
     const isolated = await fsp.mkdtemp(path.join(os.tmpdir(), 'pwui-last-admin-'));
     try {
       const only = await users.createUser(isolated, {
@@ -213,6 +213,17 @@ describe('multi-user auth foundation', () => {
         () => users.setRole(isolated, only.id, 'user'),
         (err) => err && /last admin/i.test(err.message) && err.status === 400
       );
+      await assert.rejects(
+        () => users.setDisabled(isolated, only.id, true),
+        (err) => err && /last admin/i.test(err.message) && err.status === 400
+      );
+      await assert.rejects(
+        () => users.patchUser(isolated, only.id, { disabled: true, role: 'user' }),
+        (err) => err && /last admin/i.test(err.message) && err.status === 400
+      );
+      assert.equal((await users.findById(isolated, only.id)).disabled, false);
+      assert.equal((await users.findById(isolated, only.id)).role, 'admin');
+
       const second = await users.createUser(isolated, {
         username: 'second-admin',
         password: 'password-second-admin',
@@ -221,9 +232,30 @@ describe('multi-user auth foundation', () => {
       const demoted = await users.setRole(isolated, only.id, 'user');
       assert.equal(demoted.role, 'user');
       assert.equal((await users.findById(isolated, second.id)).role, 'admin');
+      const disabled = await users.setDisabled(isolated, only.id, true);
+      assert.equal(disabled.disabled, true);
     } finally {
       await fsp.rm(isolated, { recursive: true, force: true });
     }
+  });
+
+  it('rejects non-http(s) tipUrl values', async () => {
+    await assert.rejects(
+      () => users.saveAppConfig(tmp, { tipUrl: 'javascript:alert(1)' }),
+      (err) => err && /tip url/i.test(err.message) && err.status === 400
+    );
+    await assert.rejects(
+      () => users.saveAppConfig(tmp, { tipUrl: 'data:text/html,hi' }),
+      (err) => err && err.status === 400
+    );
+    const saved = await users.saveAppConfig(tmp, {
+      tipUrl: 'https://example.com/tip',
+      brandTitle: 'Safe',
+    });
+    assert.match(saved.tipUrl, /^https:\/\/example\.com\/tip\/?$/);
+    const cleared = await users.saveAppConfig(tmp, { tipUrl: '' });
+    assert.equal(cleared.tipUrl, '');
+    assert.equal(users.normalizeTipUrl('javascript:alert(1)'), users.defaultAppConfig().tipUrl);
   });
 
   it('login always uses dummy scrypt credentials for missing users', () => {

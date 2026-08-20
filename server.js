@@ -854,24 +854,20 @@ async function handleApi(req, res, url) {
         await sessions.destroySessionsForUser(DATA_DIR, userId);
         return json(res, 200, updated);
       }
-      let updated = null;
-      if (body.disabled !== undefined) {
-        updated = await users.setDisabled(DATA_DIR, userId, body.disabled);
-        if (body.disabled) await sessions.destroySessionsForUser(DATA_DIR, userId);
-      }
-      if (body.role !== undefined) {
-        updated = await users.setRole(DATA_DIR, userId, body.role);
-      }
-      if (body.password !== undefined) {
-        updated = await users.resetPassword(DATA_DIR, userId, body.password);
-        await sessions.destroySessionsForUser(DATA_DIR, userId);
-      }
-      if (!updated) {
+      const patch = {};
+      if (body.disabled !== undefined) patch.disabled = body.disabled;
+      if (body.role !== undefined) patch.role = body.role;
+      if (body.password !== undefined) patch.password = body.password;
+      if (!Object.keys(patch).length) {
         const existing = await users.findById(DATA_DIR, userId);
         if (!existing) return json(res, 404, { error: 'User not found' });
-        updated = users.publicUser(existing);
+        return json(res, 200, users.publicUser(existing));
       }
-      return json(res, 200, updated);
+      const result = await users.patchUser(DATA_DIR, userId, patch);
+      if (result.becameDisabled || result.passwordChanged) {
+        await sessions.destroySessionsForUser(DATA_DIR, userId);
+      }
+      return json(res, 200, result.user);
     } catch (err) {
       return json(res, err.status || 400, { error: err.message || 'Update failed' });
     }
@@ -2422,12 +2418,18 @@ const server = http.createServer(async (req, res) => {
       staticPath = '/admin.html';
     }
 
+    const sessionUser = !isPublicAsset ? await loadSessionUser(req) : null;
     if (
       !isPublicAsset &&
-      !(await isAuthed(req)) &&
+      !sessionUser &&
       (staticPath === '/' || staticPath.endsWith('.html'))
     ) {
       res.writeHead(302, { Location: '/login.html' });
+      res.end();
+      return;
+    }
+    if (staticPath === '/admin.html' && sessionUser && sessionUser.user.role !== 'admin') {
+      res.writeHead(302, { Location: '/' });
       res.end();
       return;
     }
