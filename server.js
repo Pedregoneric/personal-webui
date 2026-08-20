@@ -1823,6 +1823,8 @@ async function handleApi(req, res, url) {
         createdAt: new Date().toISOString(),
       };
 
+      const ownsStream = () => activeStreams.get(chatId) === controller;
+
       try {
         const settingsForModel = await getSettings();
         const activeProvider = activeLlmProvider(settingsForModel);
@@ -1848,12 +1850,15 @@ async function handleApi(req, res, url) {
           },
         });
         assistantMsg.content = full || assistantMsg.content || '(empty response)';
-        chat.messages.push(assistantMsg);
-        chat.updatedAt = new Date().toISOString();
-        await writeJsonFile(file, chat);
-        sendEvent('done', { message: assistantMsg, chatId, title: chat.title });
+        // Skip disk write if regenerate/stop superseded this controller
+        if (ownsStream()) {
+          chat.messages.push(assistantMsg);
+          chat.updatedAt = new Date().toISOString();
+          await writeJsonFile(file, chat);
+          sendEvent('done', { message: assistantMsg, chatId, title: chat.title });
+        }
       } catch (err) {
-        if (assistantMsg.content) {
+        if (assistantMsg.content && ownsStream()) {
           chat.messages.push(assistantMsg);
           chat.updatedAt = new Date().toISOString();
           await writeJsonFile(file, chat);
@@ -1864,7 +1869,7 @@ async function handleApi(req, res, url) {
           message: assistantMsg.content ? assistantMsg : null,
         });
       } finally {
-        if (activeStreams.get(chatId) === controller) activeStreams.delete(chatId);
+        if (ownsStream()) activeStreams.delete(chatId);
         res.end();
       }
       return;
@@ -1882,35 +1887,41 @@ async function handleApi(req, res, url) {
         return json(res, 400, { error: 'Can only regenerate assistant messages' });
       }
 
+      // Claim stream slot before abort so superseded handlers skip disk writes
+      const controller = new AbortController();
       const existing = activeStreams.get(chatId);
+      activeStreams.set(chatId, controller);
       if (existing) existing.abort();
 
-      chat.messages = chat.messages.slice(0, idx);
-      chat.updatedAt = new Date().toISOString();
-      await writeJsonFile(file, chat);
+      let messages;
+      try {
+        chat.messages = chat.messages.slice(0, idx);
+        chat.updatedAt = new Date().toISOString();
+        await writeJsonFile(file, chat);
 
-      const character = chat.characterId
-        ? await readJsonFile(path.join(PATHS.characters, `${chat.characterId}.json`))
-        : null;
-      const persona = chat.personaId
-        ? await readJsonFile(path.join(PATHS.personas, `${chat.personaId}.json`))
-        : null;
-      const preset = chat.presetId
-        ? await readJsonFile(path.join(PATHS.presets, `${chat.presetId}.json`))
-        : null;
-      const mode = getMode(chat.modeId || 'chat');
+        const character = chat.characterId
+          ? await readJsonFile(path.join(PATHS.characters, `${chat.characterId}.json`))
+          : null;
+        const persona = chat.personaId
+          ? await readJsonFile(path.join(PATHS.personas, `${chat.personaId}.json`))
+          : null;
+        const preset = chat.presetId
+          ? await readJsonFile(path.join(PATHS.presets, `${chat.presetId}.json`))
+          : null;
+        const mode = getMode(chat.modeId || 'chat');
 
-      const messages = await assembleMessages({
-        chat,
-        character,
-        persona,
-        preset,
-        mode,
-        openPath: body.openPath || undefined,
-      });
-
-      const controller = new AbortController();
-      activeStreams.set(chatId, controller);
+        messages = await assembleMessages({
+          chat,
+          character,
+          persona,
+          preset,
+          mode,
+          openPath: body.openPath || undefined,
+        });
+      } catch (err) {
+        if (activeStreams.get(chatId) === controller) activeStreams.delete(chatId);
+        return json(res, err.status || 500, { error: err.message || 'Regenerate failed' });
+      }
 
       res.writeHead(200, {
         'Content-Type': 'text/event-stream; charset=utf-8',
@@ -1932,6 +1943,8 @@ async function handleApi(req, res, url) {
         createdAt: new Date().toISOString(),
       };
 
+      const ownsStream = () => activeStreams.get(chatId) === controller;
+
       try {
         const settingsForModel = await getSettings();
         const activeProvider = activeLlmProvider(settingsForModel);
@@ -1957,12 +1970,14 @@ async function handleApi(req, res, url) {
           },
         });
         assistantMsg.content = full || assistantMsg.content || '(empty response)';
-        chat.messages.push(assistantMsg);
-        chat.updatedAt = new Date().toISOString();
-        await writeJsonFile(file, chat);
-        sendEvent('done', { message: assistantMsg, chatId, title: chat.title });
+        if (ownsStream()) {
+          chat.messages.push(assistantMsg);
+          chat.updatedAt = new Date().toISOString();
+          await writeJsonFile(file, chat);
+          sendEvent('done', { message: assistantMsg, chatId, title: chat.title });
+        }
       } catch (err) {
-        if (assistantMsg.content) {
+        if (assistantMsg.content && ownsStream()) {
           chat.messages.push(assistantMsg);
           chat.updatedAt = new Date().toISOString();
           await writeJsonFile(file, chat);
@@ -1973,7 +1988,7 @@ async function handleApi(req, res, url) {
           message: assistantMsg.content ? assistantMsg : null,
         });
       } finally {
-        if (activeStreams.get(chatId) === controller) activeStreams.delete(chatId);
+        if (ownsStream()) activeStreams.delete(chatId);
         res.end();
       }
       return;

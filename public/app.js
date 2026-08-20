@@ -958,7 +958,7 @@ function renderConversation() {
             ${m.streaming ? '' : `<div class="message-actions">
               <button type="button" class="msg-action" data-copy-msg="${escapeHtml(m.id || '')}">Copy</button>
               ${m.role === 'assistant' ? `<button type="button" class="msg-action" data-regen-msg="${escapeHtml(m.id || '')}"${state.generating || state.imageGenerating ? ' disabled' : ''}>Regenerate</button>
-              <button type="button" class="msg-action" data-branch-msg="${escapeHtml(m.id || '')}">Branch</button>` : ''}
+              <button type="button" class="msg-action" data-branch-msg="${escapeHtml(m.id || '')}"${state.generating || state.imageGenerating ? ' disabled' : ''}>Branch</button>` : ''}
             </div>`}
           </div>
         </div>
@@ -1254,6 +1254,20 @@ async function regenerateMessage(messageId) {
   const target = state.chat.messages[idx];
   if (target.role !== 'assistant') return;
 
+  const chatId = state.chat.id;
+  const mode = currentMode();
+  const selectedModel =
+    $('model-select')?.value ||
+    state.chat.model ||
+    state.settings?.defaultModel ||
+    '';
+  await patchChat({
+    ...(selectedModel ? { model: selectedModel } : {}),
+    characterId: mode.layout?.showCharacter ? $('character-select').value || null : state.chat.characterId,
+    personaId: mode.layout?.showPersona ? $('persona-select').value || null : state.chat.personaId,
+  });
+  if (state.chat?.id !== chatId) return;
+
   state.generating = true;
   $('stop-gen')?.classList.remove('hidden');
   setStatus('busy', 'Regenerating…');
@@ -1269,15 +1283,17 @@ async function regenerateMessage(messageId) {
   state.chat.messages = [...kept, tempAssistant];
   renderConversation();
 
+  const stillThisChat = () => state.chat?.id === chatId;
+
   let streamFailed = false;
   try {
-    const res = await fetch(`/api/chats/${state.chat.id}/regenerate`, {
+    const res = await fetch(`/api/chats/${chatId}/regenerate`, {
       method: 'POST',
       credentials: 'same-origin',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         messageId,
-        openPath: currentMode().layout?.showCodeStage ? state.workspace.openPath || undefined : undefined,
+        openPath: mode.layout?.showCodeStage ? state.workspace.openPath || undefined : undefined,
       }),
     });
     if (!res.ok) {
@@ -1295,6 +1311,7 @@ async function regenerateMessage(messageId) {
       const chunks = buffer.split('\n\n');
       buffer = chunks.pop() || '';
       for (const chunk of chunks) {
+        if (!stillThisChat()) continue;
         let event = 'message';
         let data = '';
         for (const line of chunk.split('\n')) {
@@ -1313,15 +1330,14 @@ async function regenerateMessage(messageId) {
           if (payload.title) state.chat.title = payload.title;
           renderConversation();
         } else if (event === 'delta') {
-          tempAssistant.id = payload.id || tempAssistant.id;
           tempAssistant.content = payload.content || '';
           renderConversation();
         } else if (event === 'done') {
-          state.chat.messages = state.chat.messages.filter((m) => m.id !== 'temp-assistant');
+          state.chat.messages = state.chat.messages.filter((m) => m !== tempAssistant);
           state.chat.messages.push(payload.message);
           if (payload.title) state.chat.title = payload.title;
         } else if (event === 'stopped' || event === 'error') {
-          state.chat.messages = state.chat.messages.filter((m) => m.id !== 'temp-assistant');
+          state.chat.messages = state.chat.messages.filter((m) => m !== tempAssistant);
           if (payload.message?.content) state.chat.messages.push(payload.message);
           else if (event === 'error') {
             streamFailed = true;
@@ -1338,23 +1354,26 @@ async function regenerateMessage(messageId) {
       }
     }
     await loadChats();
+    if (!stillThisChat()) return;
     if (streamFailed) {
       renderConversation();
     } else {
-      await selectChat(state.chat.id);
+      await selectChat(chatId);
       setStatus('ok', 'Ready');
     }
   } catch (err) {
     streamFailed = true;
-    state.chat.messages = kept.slice();
-    state.chat.messages.push({
-      id: 'err',
-      role: 'assistant',
-      content: `Error: ${err.message}`,
-      createdAt: new Date().toISOString(),
-    });
-    renderConversation();
-    setStatus('err', 'Error');
+    if (stillThisChat()) {
+      state.chat.messages = kept.slice();
+      state.chat.messages.push({
+        id: 'err',
+        role: 'assistant',
+        content: `Error: ${err.message}`,
+        createdAt: new Date().toISOString(),
+      });
+      renderConversation();
+      setStatus('err', 'Error');
+    }
     toast(err.message || 'Regenerate failed');
   } finally {
     state.generating = false;
@@ -1363,7 +1382,7 @@ async function regenerateMessage(messageId) {
 }
 
 async function branchFromMessage(messageId) {
-  if (!state.chat?.id || !messageId) return;
+  if (!state.chat?.id || !messageId || state.generating || state.imageGenerating) return;
   const branched = await api(`/api/chats/${state.chat.id}/branch`, {
     method: 'POST',
     body: JSON.stringify({ messageId }),
@@ -1414,14 +1433,17 @@ async function sendMessage() {
   $('stop-gen')?.classList.remove('hidden');
   setStatus('busy', 'Thinking…');
 
+  const chatId = state.chat.id;
   const tempUser = { id: 'temp-user', role: 'user', content, createdAt: new Date().toISOString() };
   const tempAssistant = { id: 'temp-assistant', role: 'assistant', content: '', streaming: true, createdAt: new Date().toISOString() };
   state.chat.messages = [...(state.chat.messages || []), tempUser, tempAssistant];
   renderConversation();
 
+  const stillThisChat = () => state.chat?.id === chatId;
+
   let streamFailed = false;
   try {
-    const res = await fetch(`/api/chats/${state.chat.id}/message`, {
+    const res = await fetch(`/api/chats/${chatId}/message`, {
       method: 'POST',
       credentials: 'same-origin',
       headers: { 'Content-Type': 'application/json' },
@@ -1445,6 +1467,7 @@ async function sendMessage() {
       const chunks = buffer.split('\n\n');
       buffer = chunks.pop() || '';
       for (const chunk of chunks) {
+        if (!stillThisChat()) continue;
         let event = 'message';
         let data = '';
         for (const line of chunk.split('\n')) {
@@ -1459,19 +1482,18 @@ async function sendMessage() {
           continue;
         }
         if (event === 'user') {
-          state.chat.messages = state.chat.messages.filter((m) => m.id !== 'temp-user' && m.id !== 'temp-assistant');
+          state.chat.messages = state.chat.messages.filter((m) => m !== tempUser && m !== tempAssistant);
           state.chat.messages.push(payload.message, tempAssistant);
           if (payload.title) state.chat.title = payload.title;
         } else if (event === 'delta') {
-          tempAssistant.id = payload.id || tempAssistant.id;
           tempAssistant.content = payload.content || '';
           renderConversation();
         } else if (event === 'done') {
-          state.chat.messages = state.chat.messages.filter((m) => m.id !== 'temp-assistant' && m.id !== 'temp-user');
+          state.chat.messages = state.chat.messages.filter((m) => m !== tempAssistant && m !== tempUser);
           state.chat.messages.push(payload.message);
           if (payload.title) state.chat.title = payload.title;
         } else if (event === 'stopped' || event === 'error') {
-          state.chat.messages = state.chat.messages.filter((m) => m.id !== 'temp-assistant');
+          state.chat.messages = state.chat.messages.filter((m) => m !== tempAssistant);
           if (payload.message?.content) state.chat.messages.push(payload.message);
           else if (event === 'error') {
             streamFailed = true;
@@ -1488,26 +1510,29 @@ async function sendMessage() {
       }
     }
     await loadChats();
+    if (!stillThisChat()) return;
     if (streamFailed) {
       renderConversation();
     } else {
-      await selectChat(state.chat.id);
+      await selectChat(chatId);
       setStatus('ok', 'Ready');
     }
   } catch (err) {
     streamFailed = true;
-    state.chat.messages = (state.chat.messages || []).filter((m) => m.id !== 'temp-assistant' && m.id !== 'temp-user');
-    // Keep the real user message if the server already saved it; otherwise keep temp user.
-    const hasUser = (state.chat.messages || []).some((m) => m.role === 'user' && m.content === content);
-    if (!hasUser) state.chat.messages.push(tempUser);
-    state.chat.messages.push({
-      id: 'err',
-      role: 'assistant',
-      content: `Error: ${err.message}`,
-      createdAt: new Date().toISOString(),
-    });
-    renderConversation();
-    setStatus('err', 'Error');
+    if (stillThisChat()) {
+      state.chat.messages = (state.chat.messages || []).filter((m) => m !== tempAssistant && m !== tempUser);
+      // Keep the real user message if the server already saved it; otherwise keep temp user.
+      const hasUser = (state.chat.messages || []).some((m) => m.role === 'user' && m.content === content);
+      if (!hasUser) state.chat.messages.push(tempUser);
+      state.chat.messages.push({
+        id: 'err',
+        role: 'assistant',
+        content: `Error: ${err.message}`,
+        createdAt: new Date().toISOString(),
+      });
+      renderConversation();
+      setStatus('err', 'Error');
+    }
     toast(err.message || 'Generation failed');
   } finally {
     state.generating = false;
