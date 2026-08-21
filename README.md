@@ -1,10 +1,50 @@
 # Personal WebUI
 
+[![Tests](https://github.com/Pedregoneric/personal-webui/actions/workflows/test.yml/badge.svg)](https://github.com/Pedregoneric/personal-webui/actions/workflows/test.yml)
+[![Node.js 20+](https://img.shields.io/badge/Node.js-20%2B-5FA04E?logo=nodedotjs&logoColor=white)](https://nodejs.org/)
+[![MIT License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Zero dependencies](https://img.shields.io/badge/runtime_dependencies-0-0f766e)](package.json)
+
 Free, self-hosted **personal chat** for local and OpenAI-compatible cloud models. Characters, personas, prompt presets, folders, image/file gallery, themes, and chat settings — on **your** machine.
 
 **Free forever.** No paid tier, no feature unlocks. Optional one-time tips via [agentmediatools.com/tip](https://agentmediatools.com/tip) if it helps.
 
 Sibling to [Grok WebUI](https://github.com/Pedregoneric/grok-webui) and [Codex WebUI](https://github.com/Pedregoneric/codex-webui) from Agent Media Tools — same privacy model, different job (personal chat + light Code mode, not shell agents).
+
+![Personal WebUI Companion mode](docs/screenshots/personal-webui-companion.png)
+
+<table>
+  <tr>
+    <td width="70%"><strong>Code mode</strong></td>
+    <td width="30%"><strong>Mobile</strong></td>
+  </tr>
+  <tr>
+    <td><a href="docs/screenshots/personal-webui-code.png"><img src="docs/screenshots/personal-webui-code.png" alt="Personal WebUI Code mode with sandbox files and editor"></a></td>
+    <td><a href="docs/screenshots/personal-webui-mobile.png"><img src="docs/screenshots/personal-webui-mobile.png" alt="Personal WebUI mobile chat layout"></a></td>
+  </tr>
+</table>
+
+**[Product page](https://agentmediatools.com/personal-webui)** · **[All free downloads](https://agentmediatools.com/free)** · **[Optional tip](https://agentmediatools.com/tip?from=personal-webui)**
+
+## Quick start
+
+Prerequisite: [Node.js 20 or newer](https://nodejs.org/).
+
+```bash
+git clone https://github.com/Pedregoneric/personal-webui.git
+cd personal-webui
+cp .env.example .env
+npm start
+```
+
+Open **http://127.0.0.1:4547**, create the first admin account, then add an
+OpenAI-compatible model in **Settings → Models**. No `npm install` step is
+needed: the app has zero runtime dependencies.
+
+> [!IMPORTANT]
+> Keep the default localhost bind, or use a private Tailscale address. Personal
+> WebUI is intended for a trusted personal or household network—not the open
+> internet.
 
 ## Features (v0.1)
 
@@ -71,26 +111,50 @@ Stay on Codex/Grok WebUI when you need the model to run commands. Use Personal *
 - Bind to Tailscale IP or localhost — not `0.0.0.0` on a public network
 - Username + scrypt-hashed password; API keys only in server `.env`
 - Sessions: random `HttpOnly`, `SameSite=Strict` cookies
+- Browser hardening headers on every response; session cookies become `Secure` automatically behind an HTTPS proxy
 - State-changing requests require same origin
 - Admin routes return **403** for non-admins; signup returns **403** when disabled
 
-## Setup
+## Configuration
 
-Prerequisites: Node.js 20+
+The browser setup flow is the simplest option. For unattended installs, you can
+also preconfigure a model and the initial admin credentials in `.env`.
 
 ```bash
-cd /path/to/personal-webui
-cp .env.example .env   # if present; or create .env
-# Set DEEPSEEK_API_KEY, HOST, PORT, and either run first-visit setup in the browser
-# or set WEBUI_USERNAME + PASSWORD_SALT + PASSWORD_HASH
+cp .env.example .env
+# Keep HOST=127.0.0.1 for local-only access.
+# Add a provider key below, or configure models later in Settings → Models.
 npm start
 ```
 
 Default port: **4547**.
 
+Useful deployment options:
+
+```env
+# Force Secure session cookies when TLS terminates somewhere that does not
+# forward X-Forwarded-Proto: https.
+COOKIE_SECURE=true
+
+# Optional alternate env file (useful for services, tests, or parallel installs).
+PERSONAL_WEBUI_ENV_FILE=/path/to/personal-webui.env
+```
+
 On boot the server runs an **idempotent migration**: if legacy flat `data/` chats/settings/library exist (or `.env` credentials are present and no users yet), they move into the admin user’s namespace under `data/users/{id}/`. Re-running start is safe — already-migrated installs are skipped.
 
-### DeepSeek
+### Model providers
+
+Personal WebUI talks to OpenAI-compatible APIs. Provider details and secrets
+stay on the server, never in browser storage.
+
+| Provider | Example base URL | API key |
+|---|---|---|
+| LM Studio | `http://127.0.0.1:1234/v1` | Usually not required |
+| Ollama | `http://127.0.0.1:11434/v1` | Usually not required |
+| DeepSeek | `https://api.deepseek.com/v1` | Required |
+| OpenAI-compatible cloud | Provider-specific `/v1` URL | Usually required |
+
+Example DeepSeek seed configuration:
 
 ```env
 DEEPSEEK_API_KEY=sk-...
@@ -98,7 +162,14 @@ DEEPSEEK_BASE_URL=https://api.deepseek.com/v1
 DEFAULT_MODEL=deepseek-chat
 ```
 
-LM Studio / Ollama can be wired the same way later (OpenAI-compatible base URL).
+You can add or change providers later in **Settings → Models**.
+
+## Data and backups
+
+Chats, accounts, settings, media, and Code workspaces live under `data/`, which
+is ignored by Git. Back up that directory and your `.env` file before upgrades.
+Never commit either one. Updating the app does not intentionally remove user
+data, and the startup migration is idempotent.
 
 ## Development
 
