@@ -108,7 +108,8 @@ function simpleMarkdown(text) {
   let html = escapeHtml(raw);
   html = html.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, (_, alt, src) => {
     const safe = String(src).startsWith('/api/media/') || String(src).startsWith('data:image/') ? src : '#';
-    return `<img class="msg-image" src="${escapeHtml(safe)}" alt="${escapeHtml(alt || 'image')}" loading="lazy">`;
+    const label = alt || 'image';
+    return `<button type="button" class="msg-image-button" aria-label="View ${escapeHtml(label)} full size"><img class="msg-image" src="${escapeHtml(safe)}" alt="${escapeHtml(label)}" loading="lazy"></button>`;
   });
   html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
   html = html.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
@@ -419,6 +420,19 @@ function openModal(id) {
 }
 function closeModal(id) {
   $(id)?.classList.add('hidden');
+}
+
+function openImageLightbox(src, alt) {
+  if (!src || src === '#') return;
+  const image = $('lightbox-image');
+  const original = $('lightbox-original');
+  if (image) {
+    image.src = src;
+    image.alt = alt || 'Full-size image';
+  }
+  if (original) original.href = src;
+  openModal('image-lightbox');
+  $('close-image-lightbox')?.focus();
 }
 
 function applySettings(settings) {
@@ -1107,6 +1121,12 @@ function renderConversation() {
       if (id) branchFromMessage(id).catch((err) => toast(err.message || 'Branch failed'));
     });
   });
+  convo.querySelectorAll('.msg-image-button').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const image = btn.querySelector('.msg-image');
+      if (image) openImageLightbox(image.getAttribute('src'), image.alt);
+    });
+  });
   bindCodeBlockTools(convo);
   renderCodeProposals(convo, msgs);
 
@@ -1121,6 +1141,25 @@ function renderConversation() {
   if (currentMode().layout?.showCodeStage && state.chat?.id) {
     loadWorkspace().catch(() => {});
   }
+}
+
+let streamingPaintTimer = 0;
+function updateStreamingMessage(message) {
+  if (!message || streamingPaintTimer) return;
+  streamingPaintTimer = window.setTimeout(() => {
+    streamingPaintTimer = 0;
+    requestAnimationFrame(() => {
+      const article = [...document.querySelectorAll('#conversation [data-msg-id]')].find(
+        (element) => element.dataset.msgId === message.id,
+      );
+      const body = article?.querySelector('.message-body');
+      if (!body) return;
+      const pane = $('main-pane');
+      const wasNearBottom = pane ? pane.scrollHeight - pane.scrollTop - pane.clientHeight < 96 : false;
+      body.textContent = message.content || '';
+      if (pane && wasNearBottom) pane.scrollTop = pane.scrollHeight;
+    });
+  }, 50);
 }
 
 function renderCodeProposals(convo, msgs) {
@@ -1396,6 +1435,31 @@ function looksLikeImageRequest(text) {
   return false;
 }
 
+function extractLabeledImagePrompt(text) {
+  const raw = String(text || '');
+  const block = (label) => {
+    const re = new RegExp(
+      `(?:\\*\\*)?${label}(?:\\*\\*)?\\s*:\\s*(?:\\n\\s*>\\s*|\\n\\s*|\\s*>\\s*|\\s*)([\\s\\S]*?)(?=\\n\\s*(?:\\*\\*)?(?:Negative(?:\\s+prompt)?|Positive(?:\\s+prompt)?|Prompt|Optional|Composition|Notes?|Style(?:\\s+add-ons)?)(?:\\s*\\([^)]*\\))?(?:\\*\\*)?\\s*:|$)`,
+      'i',
+    );
+    const match = raw.match(re);
+    return match
+      ? match[1]
+          .replace(/^>\s?/gm, '')
+          .replace(/^```(?:\w+)?\n?|\n?```$/g, '')
+          .replace(/\*\*/g, '')
+          .trim()
+      : '';
+  };
+  const prompt =
+    block('Positive(?:\\s+prompt)?(?:\\s*\\([^)]*\\))?') || block('Prompt(?:\\s*\\([^)]*\\))?');
+  if (!prompt || prompt.length < 12) return null;
+  return {
+    prompt: prompt.slice(0, 2500),
+    negative: block('Negative(?:\\s+prompt)?(?:\\s*\\([^)]*\\))?').slice(0, 2000),
+  };
+}
+
 function imageGenAvailable() {
   // Code mode is for files — never divert to Comfy. Other modes may when enabled.
   if (currentMode().id === 'code' || currentMode().layout?.showCodeStage) return false;
@@ -1475,6 +1539,46 @@ async function sendImageRequest(idea) {
     state.generating = false;
     state.imageGenerating = false;
     $('stop-gen')?.classList.add('hidden');
+  }
+}
+
+async function generateImageFromAssistantPrompt(chatId, sourceMessageId, extracted) {
+  if (!chatId || !extracted?.prompt || !imageGenAvailable()) return false;
+  state.imageGenerating = true;
+  $('stop-gen')?.classList.remove('hidden');
+  setStatus('busy', 'Creating the image…');
+  try {
+    const studioOpts = currentMode().layoutId === 'studio' ? collectStudioGenOptions() : {};
+    const result = await api(`/api/chats/${chatId}/generate-image`, {
+      method: 'POST',
+      body: JSON.stringify({
+        idea: extracted.prompt,
+        prompt: extracted.prompt,
+        saveUserMessage: false,
+        sourceMessageId,
+        hidePromptInChat: true,
+        ...studioOpts,
+        negative: extracted.negative || studioOpts.negative || state.settings?.comfy?.negative,
+      }),
+    });
+    if (state.chat?.id === chatId) {
+      state.chat = result.chat || (await api(`/api/chats/${chatId}`));
+      renderConversation();
+    }
+    await Promise.all([loadChats(), loadGallery()]);
+    setStatus('ok', 'Image ready');
+    toast('Image generated in chat');
+    return true;
+  } catch (err) {
+    if (state.chat?.id === chatId) {
+      state.chat = await api(`/api/chats/${chatId}`).catch(() => state.chat);
+      renderConversation();
+    }
+    setStatus('err', 'Image failed');
+    toast(err.message || 'Image generation failed');
+    return false;
+  } finally {
+    state.imageGenerating = false;
   }
 }
 
@@ -1559,7 +1663,7 @@ async function regenerateMessage(messageId) {
           renderConversation();
         } else if (event === 'delta') {
           tempAssistant.content = payload.content || '';
-          renderConversation();
+          updateStreamingMessage(tempAssistant);
         } else if (event === 'done') {
           state.chat.messages = state.chat.messages.filter((m) => m !== tempAssistant);
           state.chat.messages.push(payload.message);
@@ -1666,6 +1770,7 @@ async function sendMessage() {
   const stillThisChat = () => state.chat?.id === chatId;
 
   let streamFailed = false;
+  let assistantImagePrompt = null;
   try {
     const res = await fetch(`/api/chats/${chatId}/message`, {
       method: 'POST',
@@ -1712,10 +1817,19 @@ async function sendMessage() {
           if (payload.title) state.chat.title = payload.title;
         } else if (event === 'delta') {
           tempAssistant.content = payload.content || '';
-          renderConversation();
+          updateStreamingMessage(tempAssistant);
         } else if (event === 'done') {
-          state.chat.messages = state.chat.messages.filter((m) => m !== tempAssistant && m !== tempUser);
-          state.chat.messages.push(payload.message);
+          assistantImagePrompt = imageGenAvailable() ? extractLabeledImagePrompt(payload.message?.content) : null;
+          state.chat.messages = state.chat.messages.filter((m) => m !== tempUser);
+          if (assistantImagePrompt) {
+            tempAssistant.content = 'Generating image…';
+            tempAssistant.streaming = true;
+            assistantImagePrompt.sourceMessageId = payload.message?.id || null;
+            updateStreamingMessage(tempAssistant);
+          } else {
+            state.chat.messages = state.chat.messages.filter((m) => m !== tempAssistant);
+            state.chat.messages.push(payload.message);
+          }
           if (payload.title) state.chat.title = payload.title;
         } else if (event === 'stopped' || event === 'error') {
           state.chat.messages = state.chat.messages.filter((m) => m !== tempAssistant);
@@ -1739,8 +1853,12 @@ async function sendMessage() {
     if (streamFailed) {
       renderConversation();
     } else {
-      await selectChat(chatId);
-      setStatus('ok', 'Ready');
+      if (assistantImagePrompt && imageGenAvailable()) {
+        await generateImageFromAssistantPrompt(chatId, assistantImagePrompt.sourceMessageId, assistantImagePrompt);
+      } else {
+        await selectChat(chatId);
+        setStatus('ok', 'Ready');
+      }
     }
   } catch (err) {
     streamFailed = true;
@@ -2583,6 +2701,11 @@ async function initApp() {
     modal.addEventListener('click', (e) => {
       if (e.target === modal) modal.classList.add('hidden');
     });
+  });
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && !$('image-lightbox')?.classList.contains('hidden')) {
+      closeModal('image-lightbox');
+    }
   });
 
   $('open-prefs')?.addEventListener('click', async () => {
