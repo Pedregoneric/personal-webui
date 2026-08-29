@@ -1166,6 +1166,15 @@ async function handleApi(req, res, url) {
     const idea = String(body.idea || body.prompt || '').trim();
     if (!idea) return json(res, 400, { error: 'idea required' });
 
+    const sourceMessageId = body.sourceMessageId ? safeId(String(body.sourceMessageId)) : null;
+    if (sourceMessageId) {
+      const sourceIndex = (chat.messages || []).findIndex(
+        (message) => message.id === sourceMessageId && message.role === 'assistant',
+      );
+      if (sourceIndex < 0) return json(res, 400, { error: 'Source assistant message not found' });
+      chat.messages.splice(sourceIndex, 1);
+    }
+
     // Append user message if requested (default true)
     if (body.saveUserMessage !== false) {
       chat.messages = chat.messages || [];
@@ -1184,13 +1193,11 @@ async function handleApi(req, res, url) {
     // Convert casual request → prompt via LLM when needed.
     // Prefer the user's idea directly when it already looks visual — avoids censored cloud LLMs.
     let prompt = String(body.prompt || '').trim();
+    const hasExplicitPrompt = Boolean(prompt);
     let negative = body.negative != null ? String(body.negative) : settings.comfy.negative;
     const fallbackPrompt = stripImageAskFraming(idea);
-    const looksReady =
-      ((prompt.match(/,/g) || []).length >= 3) ||
-      /^(1girl|1boy|solo|masterpiece)\b/i.test(prompt);
 
-    if (!prompt || !looksReady) {
+    if (!hasExplicitPrompt) {
       if (!prompt && ideaLooksVisualEnough(fallbackPrompt)) {
         prompt = fallbackPrompt;
       } else {
@@ -1275,7 +1282,7 @@ async function handleApi(req, res, url) {
     chat.messages.push({
       id: id('msg'),
       role: 'assistant',
-      content: `Generating image…\n\n**Prompt:**\n> ${prompt}`,
+      content: body.hidePromptInChat ? 'Generating image…' : `Generating image…\n\n**Prompt:**\n> ${prompt}`,
       createdAt: new Date().toISOString(),
     });
     chat.updatedAt = new Date().toISOString();
@@ -1333,7 +1340,9 @@ async function handleApi(req, res, url) {
         const imageMsg = {
           id: id('msg'),
           role: 'assistant',
-          content: `![generated image](${item.url})\n\n*${(item.prompt || '').slice(0, 220)}${(item.prompt || '').length > 220 ? '…' : ''}* · seed \`${item.seed}\` · \`${item.checkpoint}\``,
+          content: body.hidePromptInChat
+            ? `![generated image](${item.url})`
+            : `![generated image](${item.url})\n\n*${(item.prompt || '').slice(0, 220)}${(item.prompt || '').length > 220 ? '…' : ''}* · seed \`${item.seed}\` · \`${item.checkpoint}\``,
           createdAt: new Date().toISOString(),
           attachments: [{ id: item.id, url: item.url, kind: 'image', filename: item.filename }],
           imageGen: {

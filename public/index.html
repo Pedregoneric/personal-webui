@@ -6,7 +6,7 @@
   <title>Personal WebUI</title>
   <meta name="description" content="Self-hosted personal chat for local and cloud models.">
   <link rel="icon" href="/favicon.svg" type="image/svg+xml">
-  <link rel="stylesheet" href="/app.css?v=19">
+  <link rel="stylesheet" href="/app.css?v=23">
   <script src="/viewport.js"></script>
 </head>
 <body data-theme="dark" data-accent="neutral" data-density="comfortable" data-chat-width="wide" data-mode="chat" data-layout="chat">
@@ -35,17 +35,21 @@
       <div class="thread-heading">
         <span id="thread-heading-label">Chats</span>
         <div class="thread-heading-actions">
-          <button class="icon-btn quiet" id="new-folder" type="button" title="New folder" aria-label="New folder">📁+</button>
-          <button class="icon-btn quiet" id="refresh-chats" type="button" title="Refresh">↻</button>
+          <button class="icon-btn quiet" id="new-folder" type="button" title="New folder" aria-label="New folder">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3.5 7.5v10a2 2 0 002 2h13a2 2 0 002-2v-8a2 2 0 00-2-2h-6l-2-2h-5a2 2 0 00-2 2zM16.5 11v5M14 13.5h5"/></svg>
+          </button>
+          <button class="icon-btn quiet" id="refresh-chats" type="button" title="Refresh chats" aria-label="Refresh chats">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 6v5h-5M4 18v-5h5M6.1 9a7 7 0 0111.6-2.6L20 9M4 15l2.3 2.6A7 7 0 0018 15"/></svg>
+          </button>
         </div>
       </div>
       <nav class="thread-list" id="chat-list" aria-label="Conversations"></nav>
 
       <div class="sidebar-bottom">
-        <a class="rail-link" id="open-library" href="/characters">Characters</a>
-        <a class="rail-link hidden" id="open-admin" href="/admin">Admin</a>
-        <button class="rail-link" id="open-gallery" type="button">Gallery</button>
-        <button class="rail-link" id="open-prefs" type="button">Settings</button>
+        <a class="rail-link" id="open-library" href="/characters"><span class="rail-icon" aria-hidden="true">◈</span><span>Characters</span></a>
+        <a class="rail-link hidden" id="open-admin" href="/admin"><span class="rail-icon" aria-hidden="true">⊙</span><span>Admin</span></a>
+        <button class="rail-link" id="open-gallery" type="button"><span class="rail-icon" aria-hidden="true">▧</span><span>Gallery</span></button>
+        <button class="rail-link" id="open-prefs" type="button"><span class="rail-icon" aria-hidden="true">⌘</span><span>Settings</span></button>
         <div class="sidebar-meta">
           <span class="status-dot" id="connection"><i></i><em id="connection-label">Ready</em></span>
           <a class="text-link hidden" id="open-admin-footer" href="/admin">Admin</a>
@@ -89,11 +93,17 @@
           <strong id="chat-title">Personal WebUI</strong>
           <span id="chat-subtitle" class="sr-only">Chat</span>
         </div>
-        <div class="top-actions">
+        <div class="top-actions" role="toolbar" aria-label="Conversation tools">
           <span class="pill hidden" id="run-status"><i></i><span>Ready</span></span>
-          <button class="btn-ghost" id="open-chat-settings" type="button">Settings</button>
-          <button class="btn-ghost" id="view-prompt" type="button">Prompt</button>
-          <button class="btn-ghost" id="export-chat" type="button">Export</button>
+          <button class="tool-btn" id="open-chat-settings" type="button" title="Conversation settings" aria-label="Conversation settings">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 00.3 1.9l.1.1-2.8 2.8-.1-.1a1.7 1.7 0 00-1.9-.3 1.7 1.7 0 00-1 1.6v.2h-4V21a1.7 1.7 0 00-1-1.6 1.7 1.7 0 00-1.9.3l-.1.1L4.2 17l.1-.1a1.7 1.7 0 00.3-1.9A1.7 1.7 0 003 14H2.8v-4H3a1.7 1.7 0 001.6-1 1.7 1.7 0 00-.3-1.9L4.2 7 7 4.2l.1.1A1.7 1.7 0 009 4.6 1.7 1.7 0 0010 3v-.2h4V3a1.7 1.7 0 001 1.6 1.7 1.7 0 001.9-.3l.1-.1L19.8 7l-.1.1a1.7 1.7 0 00-.3 1.9 1.7 1.7 0 001.6 1h.2v4H21a1.7 1.7 0 00-1.6 1z"/></svg><span>Settings</span>
+          </button>
+          <button class="tool-btn" id="view-prompt" type="button" title="Inspect prompt" aria-label="Inspect prompt">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 3.5h8l4 4v13H4v-17h4zM15.5 3.5V8H20M8 12h8M8 16h6"/></svg><span>Prompt</span>
+          </button>
+          <button class="tool-btn" id="export-chat" type="button" title="Export conversation" aria-label="Export conversation">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12M7.5 10.5L12 15l4.5-4.5M4 15v5h16v-5"/></svg><span>Export</span>
+          </button>
           <button class="btn-danger hidden" id="stop-gen" type="button">Stop</button>
         </div>
       </header>
@@ -564,6 +574,16 @@
     </div>
   </div>
 
+  <div class="modal image-lightbox hidden" id="image-lightbox" role="dialog" aria-modal="true" aria-label="Full-size image viewer">
+    <div class="image-lightbox-card">
+      <div class="image-lightbox-actions">
+        <a id="lightbox-original" href="#" target="_blank" rel="noopener">Open original</a>
+        <button id="close-image-lightbox" data-close="image-lightbox" type="button" aria-label="Close image viewer">Close</button>
+      </div>
+      <img id="lightbox-image" alt="Full-size image">
+    </div>
+  </div>
+
   <div class="tip-modal hidden" id="tip-modal">
     <div class="tip-dialog">
       <button class="icon-btn tip-close" data-close="tip-modal" type="button" aria-label="Close">✕</button>
@@ -582,6 +602,6 @@
   <!-- Hidden mode select for API parity / accessibility fallback -->
   <select id="mode-select" class="sr-only" aria-hidden="true" tabindex="-1"></select>
 
-  <script src="/app.js?v=21"></script>
+  <script src="/app.js?v=26"></script>
 </body>
 </html>
